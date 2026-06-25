@@ -15,38 +15,57 @@ router.post("/webhook", async (req, res) => {
       return;
     }
 
-    const event = req.body;
-    req.log.info({ event }, "Webhook reçu");
+    const { order_id, completed } = req.body;
+    req.log.info({ order_id, completed }, "Webhook SlickPay reçu");
 
-    if (event.type === "payment.succeeded") {
-      const invoiceId = event.data?.invoice_id;
-      const giftCardId = event.data?.metadata?.gift_card_id;
+    if (!order_id) {
+      res.status(400).json({ error: "order_id est requis." });
+      return;
+    }
 
-      if (giftCardId) {
-        const { error } = await supabase
+    if (completed === 1) {
+      const { data: order, error: fetchError } = await supabase
+        .from("orders")
+        .select("gift_card_id")
+        .eq("order_id", order_id)
+        .single();
+
+      if (fetchError) {
+        req.log.error({ fetchError }, "Erreur lors de la récupération de la commande");
+      }
+
+      const { error: orderError } = await supabase
+        .from("orders")
+        .update({ status: "completed" })
+        .eq("order_id", order_id);
+
+      if (orderError) {
+        req.log.error({ orderError }, "Erreur lors de la mise à jour du statut de la commande");
+      }
+
+      if (order?.gift_card_id) {
+        const { error: cardError } = await supabase
           .from("gift_cards")
-          .update({ available: false, sold_invoice_id: invoiceId })
-          .eq("id", giftCardId);
+          .update({ available: false, status: "sold" })
+          .eq("id", order.gift_card_id);
 
-        if (error) {
-          req.log.error({ error }, "Erreur lors de la mise à jour de la carte cadeau");
+        if (cardError) {
+          req.log.error({ cardError }, "Erreur lors du marquage de la carte cadeau comme vendue");
         }
       }
 
-      const { error: orderError } = await supabase.from("orders").insert([
-        {
-          invoice_id: invoiceId,
-          gift_card_id: giftCardId ?? null,
-          amount: event.data?.amount,
-          customer_email: event.data?.customer_email,
-          status: "paid",
-          raw_event: event,
-        },
-      ]);
+      req.log.info({ order_id }, "Paiement réussi — commande et carte cadeau mises à jour");
+    } else {
+      const { error: orderError } = await supabase
+        .from("orders")
+        .update({ status: "failed" })
+        .eq("order_id", order_id);
 
       if (orderError) {
-        req.log.error({ orderError }, "Erreur lors de l'enregistrement de la commande");
+        req.log.error({ orderError }, "Erreur lors de la mise à jour du statut échoué");
       }
+
+      req.log.info({ order_id, completed }, "Paiement échoué — commande marquée comme failed");
     }
 
     res.json({ received: true });
