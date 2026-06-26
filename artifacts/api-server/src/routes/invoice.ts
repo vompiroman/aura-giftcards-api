@@ -3,7 +3,7 @@ import axios from "axios";
 
 const router: IRouter = Router();
 
-const SLICKPAY_SECRET_KEY = process.env["SLICKPAY_SECRET_KEY"];
+const SLICKPAY_PUBLIC_KEY = process.env["SLICKPAY_PUBLIC_KEY"];
 const SLICKPAY_ACCOUNT_UUID = process.env["SLICKPAY_ACCOUNT_UUID"];
 
 router.post("/create-invoice", async (req, res) => {
@@ -17,19 +17,25 @@ router.post("/create-invoice", async (req, res) => {
 
     const payload = {
       amount,
-      customer_name,
-      customer_email,
-      description: description ?? "Achat carte cadeau",
-      account_uuid: SLICKPAY_ACCOUNT_UUID,
-      metadata: { gift_card_id: gift_card_id ?? null },
+      firstname: customer_name,
+      lastname: "Client",
+      email: customer_email,
+      note: description ?? "Achat carte cadeau",
+      items: [
+        {
+          name: description ?? "Carte Cadeau",
+          price: amount,
+          quantity: 1
+        }
+      ]
     };
 
     const response = await axios.post(
-      "https://api.slickpay.dz/v1/invoices",
+      "https://prodapi.slick-pay.com/api/v2/users/invoices",
       payload,
       {
         headers: {
-          Authorization: `Bearer ${SLICKPAY_SECRET_KEY}`,
+          Authorization: `Bearer ${SLICKPAY_PUBLIC_KEY}`,
           "Content-Type": "application/json",
         },
       }
