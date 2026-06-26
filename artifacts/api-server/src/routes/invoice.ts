@@ -8,10 +8,10 @@ const SLICKPAY_ACCOUNT_UUID = process.env["SLICKPAY_ACCOUNT_UUID"];
 
 router.post("/create-invoice", async (req, res) => {
   try {
-    const { amount, customer_name, customer_email, description, gift_card_id } = req.body;
+    const { amount, customer_name, customer_email, description, items, order_id, return_url } = req.body;
 
-    if (!amount || !customer_name || !customer_email) {
-      res.status(400).json({ error: "amount, customer_name et customer_email sont requis." });
+    if (!amount || !customer_name || !customer_email || !order_id) {
+      res.status(400).json({ error: "amount, customer_name, customer_email et order_id sont requis." });
       return;
     }
 
@@ -20,14 +20,15 @@ router.post("/create-invoice", async (req, res) => {
       firstname: customer_name,
       lastname: "Client",
       email: customer_email,
-      note: description ?? "Achat carte cadeau",
-      items: [
+      note: description ?? `Commande #${order_id}`,
+      items: items && items.length > 0 ? items : [
         {
           name: description ?? "Carte Cadeau",
           price: amount,
           quantity: 1
         }
-      ]
+      ],
+      returnUrl: return_url || "http://localhost:3000/?payment=success&order_id=" + order_id
     };
 
     const response = await axios.post(

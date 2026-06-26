@@ -5,6 +5,7 @@ import invoiceRouter from "./invoice";
 import webhookRouter from "./webhook";
 import authRouter from "./auth";
 import netflixCodeRouter from "./netflix-code";
+import ordersRouter from "./orders";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(invoiceRouter);
 router.use(webhookRouter);
 router.use(authRouter);
 router.use(netflixCodeRouter);
+router.use(ordersRouter);
 
 export default router;
