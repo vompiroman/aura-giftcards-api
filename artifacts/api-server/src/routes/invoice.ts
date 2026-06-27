@@ -19,6 +19,7 @@ router.post("/create-invoice", async (req, res) => {
       amount,
       firstname: customer_name,
       lastname: "Client",
+      address: "Alger, Algerie",
       email: customer_email,
       note: description ?? `Commande #${order_id}`,
       items: items && items.length > 0 ? items : [
