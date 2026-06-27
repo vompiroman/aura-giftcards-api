@@ -299,6 +299,47 @@ router.get("/my-credentials", async (req, res) => {
   }
 });
 
+// POST client credentials into order.items
+router.post("/client-credentials", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
+    const token = authHeader.replace("Bearer ", "");
+
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
+
+    const { order_id, service, email, password, whatsapp } = req.body;
+    if (!order_id || !service || !email || !password || !whatsapp) {
+      return res.status(400).json({ error: "Données manquantes" });
+    }
+
+    const { data: order, error: orderError } = await supabase.from("orders").select("*").eq("order_id", order_id).single();
+    if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
+    if (order.assigned_email !== userData.user.email) return res.status(403).json({ error: "Accès refusé" });
+
+    // Update items with credentials
+    let items = Array.isArray(order.items) ? order.items : [];
+    if (typeof order.items === 'string') {
+      try { items = JSON.parse(order.items); } catch(e) {}
+    }
+    
+    const updatedItems = items.map((item: any) => {
+      if (item.name && item.name.toLowerCase().includes(service.toLowerCase())) {
+        return { ...item, client_credentials: { email, password, whatsapp } };
+      }
+      return item;
+    });
+
+    const { error: updateError } = await supabase.from("orders").update({ items: updatedItems }).eq("order_id", order_id);
+    if (updateError) throw updateError;
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // Admin inventory routes
 router.get("/admin/inventory", async (req, res) => {
   try {
