@@ -29,7 +29,7 @@ router.post("/create-invoice", async (req, res) => {
           quantity: 1
         }
       ],
-      returnUrl: return_url || "http://localhost:3000/?payment=success&order_id=" + order_id
+      url: return_url || "http://localhost:3000/?payment=success&order_id=" + order_id
     };
 
     const response = await axios.post(
