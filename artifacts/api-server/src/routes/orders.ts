@@ -1,6 +1,5 @@
 import { Router, type IRouter } from "express";
 import { supabase } from "../lib/supabase";
-import { v4 as uuidv4 } from "uuid";
 
 const router: IRouter = Router();
 
@@ -25,22 +24,23 @@ router.post("/create-order", async (req, res) => {
       return;
     }
 
-    const orderId = uuidv4();
+    // Generate a simple unique ID without any external dependencies to avoid build errors
+    const orderId = "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000000);
     const assignedEmail = userData.user.email;
 
-    // TODO: Depending on the schema, items might be saved in a specific way or as JSON
     const { error: insertError } = await supabase
       .from("orders")
       .insert({
         order_id: orderId,
         assigned_email: assignedEmail,
         status: "pending",
-        // Assuming there is a details or items column, or maybe not. We will just save what we can.
+        amount: amount,
+        items: items
       });
 
     if (insertError) {
       req.log.error({ insertError }, "Supabase error creating order");
-      res.status(500).json({ error: "Erreur lors de la création de la commande." });
+      res.status(500).json({ error: "Erreur Supabase: " + insertError.message + " | Details: " + insertError.details });
       return;
     }
 
@@ -69,8 +69,7 @@ router.get("/my-orders", async (req, res) => {
     const { data, error } = await supabase
       .from("orders")
       .select("*")
-      .eq("assigned_email", userData.user.email)
-      // .order("created_at", { ascending: false }); // Supabase will order if column exists
+      .eq("assigned_email", userData.user.email);
 
     if (error) {
       req.log.error({ error }, "Supabase error fetching orders");
@@ -82,6 +81,279 @@ router.get("/my-orders", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Unexpected error in GET /my-orders");
     res.status(500).json({ error: "Erreur interne du serveur." });
+  }
+});
+
+router.get("/validate-order", async (req, res) => {
+  try {
+    const { id } = req.query;
+    if (!id || typeof id !== 'string') {
+      res.status(400).send("ID manquant");
+      return;
+    }
+    
+    // Fetch the order
+    const { data: order, error: fetchError } = await supabase
+      .from("orders")
+      .select("*")
+      .eq("order_id", id)
+      .single();
+      
+    if (fetchError || !order) {
+      res.status(404).send("Commande non trouvée");
+      return;
+    }
+    
+    if (order.status === 'active') {
+      res.send(`
+        <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+          <h1 style="color: #1DB954;">✅ Déjà Validée !</h1>
+          <p>La commande <strong>${id}</strong> est déjà active.</p>
+        </div>
+      `);
+      return;
+    }
+
+    let durationMonths = 1;
+    let serviceName = "netflix";
+    const itemsText = JSON.stringify(order.items || []).toLowerCase();
+    
+    if (itemsText.includes("spotify")) serviceName = "spotify";
+    else if (itemsText.includes("crunchyroll")) serviceName = "crunchyroll";
+
+    if (itemsText.includes("2 mois") || itemsText.includes("2 months") || itemsText.includes("شهران")) {
+      durationMonths = 2;
+    } else if (itemsText.includes("1 an") || itemsText.includes("1 year") || itemsText.includes("سنة واحدة")) {
+      durationMonths = 12;
+    } else if (itemsText.includes("6 mois") || itemsText.includes("6 months")) {
+      durationMonths = 6;
+    }
+    
+    const expiresAt = new Date();
+    expiresAt.setMonth(expiresAt.getMonth() + durationMonths);
+    
+    // Auto-assign from inventory
+    const { data: invItem } = await supabase
+      .from("inventory")
+      .select("*")
+      .eq("service", serviceName)
+      .eq("is_used", false)
+      .limit(1)
+      .single();
+
+    let accountAssignedMsg = "";
+    if (invItem) {
+      await supabase.from("inventory").update({ is_used: true, assigned_order_id: id }).eq("id", invItem.id);
+      accountAssignedMsg = `<p style="color: #1DB954; font-weight: bold; padding: 10px; border: 1px solid #1DB954; border-radius: 5px;">🎉 Un compte ${serviceName} a été automatiquement assigné et livré au client !</p>`;
+    } else {
+      accountAssignedMsg = `<p style="color: orange; font-weight: bold;">⚠️ Aucun compte en stock pour ${serviceName}. Pensez à ajouter le compte manuellement.</p>`;
+    }
+
+    const { error: updateError } = await supabase
+      .from("orders")
+      .update({
+        status: "active",
+        expires_at: expiresAt.toISOString()
+      })
+      .eq("order_id", id);
+      
+    if (updateError) {
+      res.status(500).send("Erreur lors de la validation : " + updateError.message);
+      return;
+    }
+    
+    res.send(`
+      <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+        <h1 style="color: #1DB954;">✅ Commande Validée !</h1>
+        <p>La commande <strong>${id}</strong> est maintenant active.</p>
+        <p>Date d'expiration automatique : <strong>${expiresAt.toLocaleDateString('fr-FR')}</strong></p>
+        ${accountAssignedMsg}
+      </div>
+    `);
+  } catch (err) {
+    req.log.error({ err }, "Validation error");
+    res.status(500).send("Erreur serveur");
+  }
+});
+
+router.get("/cron/reminders", async (req, res) => {
+  try {
+    const webhookUrl = 'https://discord.com/api/webhooks/1519850436952199291/Kf4pCzMk2YszqrfPTII7rtnws_ul193Dp2GO9YE4JmOFTuRGDa7ZXuVfIWizkcchjrae';
+    
+    const now = new Date();
+    const threeDaysFromNow = new Date();
+    threeDaysFromNow.setDate(now.getDate() + 3);
+    const twoDaysFromNow = new Date();
+    twoDaysFromNow.setDate(now.getDate() + 2);
+    
+    const { data: expiringOrders, error } = await supabase
+      .from("orders")
+      .select("*")
+      .eq("status", "active")
+      .lte("expires_at", threeDaysFromNow.toISOString())
+      .gt("expires_at", twoDaysFromNow.toISOString());
+      
+    if (error) {
+      req.log.error({ error }, "Error fetching expiring orders");
+      res.status(500).json({ error: error.message });
+      return;
+    }
+    
+    if (!expiringOrders || expiringOrders.length === 0) {
+      res.json({ message: "Aucun rappel nécessaire aujourd'hui." });
+      return;
+    }
+    
+    let sentCount = 0;
+    for (const order of expiringOrders) {
+      // PRE-FILLED WHATSAPP LINK FOR ADMIN
+      const message = `Bonjour Aura Stream ! Mon abonnement se termine dans 3 jours et je souhaite le renouveler pour ne pas perdre l'accès.`;
+      const waLink = `https://wa.me/?text=${encodeURIComponent(message)}`;
+
+      const payload = {
+        content: `🚨 **RAPPEL D'EXPIRATION IMMINENTE (J-3)** 🚨\n\n**Commande :** ${order.order_id}\n**Client :** ${order.assigned_email}\n**Articles :** ${JSON.stringify(order.items)}\n**Expire le :** ${new Date(order.expires_at).toLocaleDateString('fr-FR')}\n\n👉 **Action:** Cliquez ici pour contacter le client sur WhatsApp : ${waLink}`
+      };
+      
+      await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      sentCount++;
+    }
+    
+    res.json({ message: `${sentCount} rappel(s) envoyé(s) sur Discord.` });
+  } catch (err) {
+    req.log.error({ err }, "Cron error");
+    res.status(500).json({ error: "Erreur interne" });
+  }
+});
+
+router.get("/admin/all-orders", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      res.status(401).json({ error: "Token manquant" });
+      return;
+    }
+    const token = authHeader.replace("Bearer ", "");
+
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email) {
+      res.status(401).json({ error: "Token invalide ou expiré." });
+      return;
+    }
+    
+    // Authorization check
+    const adminEmail = process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com";
+    if (userData.user.email !== adminEmail) {
+      res.status(403).json({ error: "Accès refusé. Vous n'êtes pas administrateur." });
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("orders")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      req.log.error({ error }, "Supabase error fetching all orders");
+      res.status(500).json({ error: "Erreur lors de la récupération des commandes." });
+      return;
+    }
+
+    res.json({ orders: data });
+  } catch (err) {
+    req.log.error({ err }, "Unexpected error in GET /admin/all-orders");
+    res.status(500).json({ error: "Erreur interne du serveur." });
+  }
+});
+
+// GET user credentials from inventory
+router.get("/my-credentials", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
+    const token = authHeader.replace("Bearer ", "");
+
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
+
+    // Fetch orders for this user to get their order IDs
+    const { data: userOrders } = await supabase.from("orders").select("order_id").eq("assigned_email", userData.user.email);
+    if (!userOrders || userOrders.length === 0) return res.json({ credentials: [] });
+
+    const orderIds = userOrders.map(o => o.order_id);
+
+    // Fetch assigned inventory for these orders
+    const { data: credentials, error } = await supabase
+      .from("inventory")
+      .select("assigned_order_id, account_email, account_password, service")
+      .in("assigned_order_id", orderIds);
+
+    if (error) throw error;
+    res.json({ credentials: credentials || [] });
+  } catch (err) {
+    req.log.error({ err }, "Error fetching credentials");
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Admin inventory routes
+router.get("/admin/inventory", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
+    const token = authHeader.replace("Bearer ", "");
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email || userData.user.email !== (process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com")) {
+      return res.status(403).json({ error: "Accès refusé." });
+    }
+
+    const { data, error } = await supabase.from("inventory").select("*").order("created_at", { ascending: false });
+    if (error) throw error;
+    res.json({ inventory: data || [] });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+router.post("/admin/inventory", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
+    const token = authHeader.replace("Bearer ", "");
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email || userData.user.email !== (process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com")) {
+      return res.status(403).json({ error: "Accès refusé." });
+    }
+
+    const { service, account_email, account_password } = req.body;
+    if (!service || !account_email || !account_password) return res.status(400).json({ error: "Données manquantes." });
+
+    const { error } = await supabase.from("inventory").insert({ service, account_email, account_password });
+    if (error) throw error;
+    res.status(201).json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+router.delete("/admin/inventory/:id", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
+    const token = authHeader.replace("Bearer ", "");
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email || userData.user.email !== (process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com")) {
+      return res.status(403).json({ error: "Accès refusé." });
+    }
+
+    const { error } = await supabase.from("inventory").delete().eq("id", req.params.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
