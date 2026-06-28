@@ -269,6 +269,41 @@ router.get("/admin/all-orders", async (req, res) => {
   }
 });
 
+router.post("/admin/update-order-status", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
+    const token = authHeader.replace("Bearer ", "");
+
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
+
+    const adminEmails = ["admin@aura-stream.com", "vompiroman@gmail.com", process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com"];
+    if (!adminEmails.includes(userData.user.email)) {
+      return res.status(403).json({ error: "Accès refusé. Admin requis." });
+    }
+
+    const { order_id, status } = req.body;
+    if (!order_id || !status) return res.status(400).json({ error: "order_id et status requis." });
+    if (!['pending', 'active', 'cancelled'].includes(status)) return res.status(400).json({ error: "Statut invalide." });
+
+    const { error: updateError } = await supabase
+      .from("orders")
+      .update({ status: status })
+      .eq("order_id", order_id);
+
+    if (updateError) {
+      req.log.error({ updateError }, "Supabase error updating order status");
+      return res.status(500).json({ error: "Erreur lors de la mise à jour." });
+    }
+
+    res.json({ success: true, status: status });
+  } catch (err) {
+    req.log.error({ err }, "Unexpected error in POST /admin/update-order-status");
+    res.status(500).json({ error: "Erreur interne." });
+  }
+});
+
 // GET user credentials from inventory
 router.get("/my-credentials", async (req, res) => {
   try {
