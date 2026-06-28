@@ -1,5 +1,7 @@
 import { Router, type IRouter } from "express";
 import { supabase } from "../lib/supabase";
+import { ImapFlow } from "imapflow";
+import { simpleParser } from "mailparser";
 
 const router: IRouter = Router();
 
@@ -372,6 +374,88 @@ router.post("/client-credentials", async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+router.post("/get-netflix-otp", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
+    const token = authHeader.replace("Bearer ", "");
+
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
+
+    const { order_id } = req.body;
+    if (!order_id) return res.status(400).json({ error: "order_id requis." });
+
+    const { data: order, error: orderError } = await supabase.from("orders").select("*").eq("order_id", order_id).single();
+    if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
+    if (order.assigned_email !== userData.user.email) return res.status(403).json({ error: "Accès refusé" });
+
+    const { data: invItems, error: invError } = await supabase.from("inventory").select("*").eq("assigned_order_id", order_id);
+    if (invError || !invItems || invItems.length === 0) return res.status(404).json({ error: "Aucun compte assigné" });
+    
+    const netflixAccount = invItems.find((i: any) => i.service.toLowerCase().includes("netflix"));
+    if (!netflixAccount) return res.status(404).json({ error: "Pas de compte Netflix assigné" });
+
+    const email = netflixAccount.account_email;
+    const password = netflixAccount.account_password;
+
+    if (!email || !password) return res.status(400).json({ error: "Identifiants IMAP manquants dans l'inventaire" });
+
+    let host = 'imap-mail.outlook.com';
+    let port = 993;
+    if (email.includes('@gmail.com')) host = 'imap.gmail.com';
+    else if (email.includes('@yahoo.com')) host = 'imap.mail.yahoo.com';
+
+    const client = new ImapFlow({
+      host: host,
+      port: port,
+      secure: true,
+      auth: { user: email, pass: password },
+      logger: false
+    });
+
+    try {
+      await client.connect();
+    } catch(e) {
+      req.log.error({ e, email }, "IMAP Connection Error");
+      return res.status(500).json({ error: "Impossible de se connecter à la boîte mail. Vérifiez le mot de passe d'application." });
+    }
+
+    let lock = await client.getMailboxLock('INBOX');
+    try {
+      const since = new Date(Date.now() - 15 * 60 * 1000); // last 15 min
+      let foundCode = null;
+
+      for await (let message of client.fetch({ since }, { envelope: true, source: true })) {
+        if (message.envelope.from.some((f: any) => f.address.toLowerCase().includes('netflix'))) {
+          const parsed = await simpleParser(message.source);
+          const text = parsed.text || parsed.html || "";
+          
+          // Chercher une séquence de 4 à 6 chiffres
+          const match = text.match(/\b\d{4,6}\b/g);
+          if (match) {
+            foundCode = match[0];
+            break;
+          }
+        }
+      }
+
+      if (foundCode) {
+        res.json({ success: true, code: foundCode });
+      } else {
+        res.status(404).json({ error: "Aucun code trouvé dans les 15 dernières minutes. Veuillez demander un nouveau code sur Netflix puis réessayer dans 1 minute." });
+      }
+    } finally {
+      lock.release();
+    }
+    await client.logout();
+    
+  } catch (err) {
+    req.log.error({ err }, "Unexpected error in POST /get-netflix-otp");
+    res.status(500).json({ error: "Erreur lors de la récupération de l'email." });
   }
 });
 
