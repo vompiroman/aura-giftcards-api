@@ -404,7 +404,7 @@ router.post("/get-netflix-otp", async (req, res) => {
 
     if (!email || !password) return res.status(400).json({ error: "Identifiants IMAP manquants dans l'inventaire" });
 
-    let host = 'imap-mail.outlook.com';
+    let host = 'outlook.office365.com';
     let port = 993;
     if (email.includes('@gmail.com')) host = 'imap.gmail.com';
     else if (email.includes('@yahoo.com')) host = 'imap.mail.yahoo.com';
@@ -413,6 +413,9 @@ router.post("/get-netflix-otp", async (req, res) => {
       host: host,
       port: port,
       secure: true,
+      tls: {
+        rejectUnauthorized: false
+      },
       auth: { user: email, pass: password },
       logger: false
     });
