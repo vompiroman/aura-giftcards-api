@@ -120,7 +120,8 @@ router.get("/validate-order", async (req, res) => {
     let serviceName = "netflix";
     const itemsText = JSON.stringify(order.items || []).toLowerCase();
     
-    if (itemsText.includes("spotify")) serviceName = "spotify";
+    if (itemsText.includes("netflix")) serviceName = "netflix";
+    else if (itemsText.includes("spotify")) serviceName = "spotify";
     else if (itemsText.includes("crunchyroll")) serviceName = "crunchyroll";
 
     if (itemsText.includes("2 mois") || itemsText.includes("2 months") || itemsText.includes("شهران")) {
