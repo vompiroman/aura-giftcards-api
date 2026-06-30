@@ -488,12 +488,25 @@ router.post("/admin/inventory", async (req, res) => {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
-    const { service, account_email, account_password, profile_name, profile_pin } = req.body;
-    if (!service || !account_email || !account_password) return res.status(400).json({ error: "Données manquantes." });
+    if (Array.isArray(req.body)) {
+      const rows = req.body.map(item => ({
+        service: item.service,
+        account_email: item.account_email,
+        account_password: item.account_password,
+        profile_name: item.profile_name,
+        profile_pin: item.profile_pin
+      }));
+      const { error } = await supabase.from("inventory").insert(rows);
+      if (error) throw error;
+      return res.status(201).json({ success: true });
+    } else {
+      const { service, account_email, account_password, profile_name, profile_pin } = req.body;
+      if (!service || !account_email || !account_password) return res.status(400).json({ error: "Données manquantes." });
 
-    const { error } = await supabase.from("inventory").insert({ service, account_email, account_password, profile_name, profile_pin });
-    if (error) throw error;
-    res.status(201).json({ success: true });
+      const { error } = await supabase.from("inventory").insert({ service, account_email, account_password, profile_name, profile_pin });
+      if (error) throw error;
+      res.status(201).json({ success: true });
+    }
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
