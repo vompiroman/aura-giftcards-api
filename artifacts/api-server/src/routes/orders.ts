@@ -517,4 +517,29 @@ router.delete("/admin/inventory/:id", async (req, res) => {
   }
 });
 
+router.put("/admin/inventory/:id", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
+    const token = authHeader.replace("Bearer ", "");
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email || userData.user.email !== (process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com")) {
+      return res.status(403).json({ error: "Accès refusé." });
+    }
+
+    const { account_email, account_password, profile_name, profile_pin } = req.body;
+    const updates: any = {};
+    if (account_email !== undefined) updates.account_email = account_email;
+    if (account_password !== undefined) updates.account_password = account_password;
+    if (profile_name !== undefined) updates.profile_name = profile_name;
+    if (profile_pin !== undefined) updates.profile_pin = profile_pin;
+
+    const { error } = await supabase.from("inventory").update(updates).eq("id", req.params.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 export default router;
