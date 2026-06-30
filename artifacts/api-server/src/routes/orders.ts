@@ -325,7 +325,7 @@ router.get("/my-credentials", async (req, res) => {
     // Fetch assigned inventory for these orders
     const { data: credentials, error } = await supabase
       .from("inventory")
-      .select("assigned_order_id, account_email, account_password, service")
+      .select("assigned_order_id, account_email, account_password, service, profile_name, profile_pin")
       .in("assigned_order_id", orderIds);
 
     if (error) throw error;
@@ -488,10 +488,10 @@ router.post("/admin/inventory", async (req, res) => {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
-    const { service, account_email, account_password } = req.body;
+    const { service, account_email, account_password, profile_name, profile_pin } = req.body;
     if (!service || !account_email || !account_password) return res.status(400).json({ error: "Données manquantes." });
 
-    const { error } = await supabase.from("inventory").insert({ service, account_email, account_password });
+    const { error } = await supabase.from("inventory").insert({ service, account_email, account_password, profile_name, profile_pin });
     if (error) throw error;
     res.status(201).json({ success: true });
   } catch (err) {
