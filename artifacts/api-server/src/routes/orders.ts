@@ -34,11 +34,10 @@ router.post("/create-order", async (req, res) => {
       .from("orders")
       .insert({
         order_id: orderId,
-        user_id: userData.user.id,
         assigned_email: assignedEmail,
-        status: "pending",
+        items: items,
         amount: amount,
-        items: items
+        status: "pending"
       });
 
     if (insertError) {
