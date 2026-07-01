@@ -180,7 +180,11 @@ router.get("/validate-order", async (req, res) => {
 
 router.get("/cron/reminders", async (req, res) => {
   try {
-    const webhookUrl = 'https://discord.com/api/webhooks/1519850436952199291/Kf4pCzMk2YszqrfPTII7rtnws_ul193Dp2GO9YE4JmOFTuRGDa7ZXuVfIWizkcchjrae';
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (!webhookUrl) {
+      res.status(500).json({ error: "DISCORD_WEBHOOK_URL non défini." });
+      return;
+    }
     
     const now = new Date();
     const threeDaysFromNow = new Date();
@@ -370,6 +374,28 @@ router.post("/client-credentials", async (req, res) => {
 
     const { error: updateError } = await supabase.from("orders").update({ items: updatedItems }).eq("order_id", order_id);
     if (updateError) throw updateError;
+
+    // Notification Discord désormais gérée côté serveur par /client-credentials
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (webhookUrl) {
+      const frontendUrl = (process.env.FRONTEND_URL || "https://aura-stream.netlify.app").replace(/\/$/, "");
+      const validationLink = `${frontendUrl}/?admin=true`;
+      let icon = '🔔';
+      if (service.toLowerCase().includes('spotify')) icon = '🎵';
+      else if (service.toLowerCase().includes('crunchyroll')) icon = '🍥';
+
+      const content = `${icon} **Nouveau compte ${service} à activer !**\n**Commande :** ${order_id}\n**Email :** ${email}\n**Mot de passe :** ${password}\n**Numéro WhatsApp :** ${whatsapp}\n\n[🛠️ Valider et activer la commande](${validationLink})`;
+
+      try {
+        await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content })
+        });
+      } catch (webhookErr) {
+        req.log.error({ webhookErr }, "Failed to send Discord webhook");
+      }
+    }
 
     res.json({ success: true });
   } catch (err) {
