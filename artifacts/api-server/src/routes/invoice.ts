@@ -1,6 +1,7 @@
-import { Router, Request } from "express";
+import { Router, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import { supabase } from "../lib/supabase";
+import { PRICES } from "../config/prices";
 
 const router = Router();
 
@@ -29,7 +30,40 @@ async function getAuthedEmail(req: Request): Promise<string | null> {
   return data.user.email;
 }
 
-router.post("/create-invoice", invoiceLimiter, async (req, res): Promise<void> => {
+// Construction des lignes SlickPay (exige { name, price, quantity })
+function buildSlickpayItems(
+  orderItems: any[]
+): Array<{ name: string; price: number; quantity: number }> | null {
+  if (!Array.isArray(orderItems) || orderItems.length === 0) return null;
+
+  const mapped = [];
+  for (const item of orderItems) {
+    const unitPrice = PRICES[item.name];
+    const qty = Number(item.quantity);
+
+    if (typeof unitPrice !== "number" || !Number.isFinite(qty) || qty <= 0) {
+      console.warn(`[invoice] Ligne non résolvable pour SlickPay : ${item?.name}`);
+      return null;
+    }
+
+    mapped.push({
+      name: item.name,
+      price: unitPrice,
+      quantity: qty,
+    });
+  }
+  return mapped;
+}
+
+// Fallback garanti-accepté : une seule ligne
+function singleLineFallback(
+  orderId: string,
+  amount: number
+): Array<{ name: string; price: number; quantity: number }> {
+  return [{ name: `Commande ${orderId}`, price: amount, quantity: 1 }];
+}
+
+router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Response): Promise<void> => {
   try {
     const email = await getAuthedEmail(req);
     if (!email) {
@@ -70,6 +104,13 @@ router.post("/create-invoice", invoiceLimiter, async (req, res): Promise<void> =
       return;
     }
 
+    const detailed = buildSlickpayItems(order.items);
+    const slickpayItems = detailed ?? singleLineFallback(order.order_id, amount);
+
+    const itemsTotal = slickpayItems.reduce((s, it) => s + it.price * it.quantity, 0);
+    const finalItems =
+      itemsTotal === amount ? slickpayItems : singleLineFallback(order.order_id, amount);
+
     const payload = {
       amount,
       url: `${process.env.FRONTEND_URL || "http://localhost:3000"}/?payment=success&order_id=${order.order_id}`,
@@ -77,42 +118,39 @@ router.post("/create-invoice", invoiceLimiter, async (req, res): Promise<void> =
       firstname: email.split("@")[0] || "Client",
       lastname: "Aura Stream",
       email,
-      items: order.items && Array.isArray(order.items) && order.items.length > 0 ? order.items : [
-        {
-          name: `Commande ${order.order_id}`,
-          price: amount,
-          quantity: 1,
-        },
-      ],
+      items: finalItems,
     };
 
+    const apiKey = process.env.SLICKPAY_PUBLIC_KEY || process.env.SLICKPAY_API_KEY || "";
     const spRes = await fetch(SLICKPAY_URL, {
       method: "POST",
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.SLICKPAY_PUBLIC_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
     });
 
     if (!spRes.ok) {
-      console.error("SlickPay error:", spRes.status);
+      const detail = await spRes.text().catch(() => "");
+      console.error(`[invoice] SlickPay error ${spRes.status} pour commande ${order_id}: ${detail}`);
       res.status(502).json({ error: "Erreur du prestataire de paiement." });
       return;
     }
 
     const spData: any = await spRes.json();
+    const invoiceId = spData?.data?.id || spData?.id;
 
-    if (spData?.data?.id || spData?.id) {
+    if (invoiceId) {
       await supabase
         .from("orders")
-        .update({ invoice_id: String(spData?.data?.id || spData?.id) })
+        .update({ invoice_id: String(invoiceId) })
         .eq("order_id", order.order_id);
     }
 
     res.json({
-      payment_url: spData?.url || spData?.data?.url || spData?.payment_url,
+      payment_url: spData?.url || spData?.data?.url || spData?.payment_url || spData?.redirect_url,
       order_id: order.order_id,
       amount,
     });
