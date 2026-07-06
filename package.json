@@ -10,6 +10,7 @@
   },
   "private": true,
   "devDependencies": {
+    "@esbuild/win32-x64": "^0.27.3",
     "prettier": "^3.8.4",
     "typescript": "~5.9.3"
   }

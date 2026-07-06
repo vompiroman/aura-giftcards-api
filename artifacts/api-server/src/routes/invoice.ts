@@ -12,10 +12,11 @@ const invoiceLimiter = rateLimit({
   max: 15,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false, default: false },
   keyGenerator: (req: Request) => {
     const h = req.headers.authorization || "";
     const token = h.startsWith("Bearer ") ? h.slice(7) : "";
-    return token || req.ip || "unknown";
+    return token || (typeof req.headers["x-forwarded-for"] === "string" ? req.headers["x-forwarded-for"] : "unknown");
   },
   message: { error: "Trop de tentatives de paiement, réessayez dans une minute." },
 });

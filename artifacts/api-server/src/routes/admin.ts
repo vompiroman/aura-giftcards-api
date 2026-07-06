@@ -10,6 +10,7 @@ const testAlertLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false, default: false },
   message: { error: "Trop de tests d'alerte, patientez une minute." },
 });
 

@@ -13,10 +13,11 @@ const createOrderLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false, default: false },
   keyGenerator: (req: Request) => {
     const h = req.headers.authorization || "";
     const token = h.startsWith("Bearer ") ? h.slice(7) : "";
-    return token || req.ip || "unknown";
+    return token || (typeof req.headers["x-forwarded-for"] === "string" ? req.headers["x-forwarded-for"] : "unknown");
   },
   message: { error: "Trop de commandes créées, réessayez dans une minute." },
 });
