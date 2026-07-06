@@ -70,7 +70,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
   }
 });
 
-router.get("/my-orders", async (req, res) => {
+router.get("/my-orders", async (req, res): Promise<any> => {
   try {
     const email = await getAuthedEmail(req);
     if (!email) {
@@ -97,7 +97,7 @@ router.get("/my-orders", async (req, res) => {
   }
 });
 
-router.get("/validate-order", async (req, res) => {
+router.get("/validate-order", async (req, res): Promise<any> => {
   try {
     const { id } = req.query;
     if (!id || typeof id !== 'string') {
@@ -189,7 +189,7 @@ router.get("/validate-order", async (req, res) => {
   }
 });
 
-router.get("/cron/reminders", async (req, res) => {
+router.get("/cron/reminders", async (req, res): Promise<any> => {
   try {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) {
@@ -246,7 +246,7 @@ router.get("/cron/reminders", async (req, res) => {
   }
 });
 
-router.get("/admin/all-orders", async (req, res) => {
+router.get("/admin/all-orders", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) {
@@ -286,7 +286,7 @@ router.get("/admin/all-orders", async (req, res) => {
   }
 });
 
-router.post("/admin/update-order-status", async (req, res) => {
+router.post("/admin/update-order-status", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
@@ -365,7 +365,7 @@ router.get("/my-credentials", async (req, res): Promise<void> => {
 });
 
 // POST client credentials into order.items
-router.post("/client-credentials", async (req, res) => {
+router.post("/client-credentials", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
@@ -427,7 +427,7 @@ router.post("/client-credentials", async (req, res) => {
   }
 });
 
-router.post("/get-netflix-otp", async (req, res) => {
+router.post("/get-netflix-otp", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
@@ -483,9 +483,9 @@ router.post("/get-netflix-otp", async (req, res) => {
       let foundCode = null;
 
       for await (let message of client.fetch({ since }, { envelope: true, source: true })) {
-        if (message.envelope.from.some((f: any) => f.address.toLowerCase().includes('netflix'))) {
-          const parsed = await simpleParser(message.source);
-          const text = parsed.text || parsed.html || "";
+        if (message.envelope?.from?.some((f: any) => f.address?.toLowerCase().includes('netflix'))) {
+          const parsed = await simpleParser(message.source as any);
+          const text = ((parsed as any).text || (parsed as any).html || "") as string;
           
           // Chercher une séquence de 4 à 6 chiffres
           const match = text.match(/\b\d{4,6}\b/g);
@@ -513,7 +513,7 @@ router.post("/get-netflix-otp", async (req, res) => {
 });
 
 // Admin inventory routes
-router.get("/admin/inventory", async (req, res) => {
+router.get("/admin/inventory", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
@@ -531,7 +531,7 @@ router.get("/admin/inventory", async (req, res) => {
   }
 });
 
-router.post("/admin/inventory", async (req, res) => {
+router.post("/admin/inventory", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
@@ -565,7 +565,7 @@ router.post("/admin/inventory", async (req, res) => {
   }
 });
 
-router.delete("/admin/inventory/:id", async (req, res) => {
+router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
@@ -583,7 +583,7 @@ router.delete("/admin/inventory/:id", async (req, res) => {
   }
 });
 
-router.put("/admin/inventory/:id", async (req, res) => {
+router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
