@@ -34,6 +34,7 @@ function buildAllowedOrigins(): Set<string> {
   const raw = [
     process.env.ALLOWED_ORIGINS,
     process.env.FRONTEND_URL,
+    "https://aura-stream.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
@@ -48,25 +49,30 @@ function buildAllowedOrigins(): Set<string> {
 }
 
 const allowedOrigins = buildAllowedOrigins();
-const corsSoftMode = process.env.CORS_SOFT_MODE === "true";
+const corsSoftMode = process.env.CORS_SOFT_MODE !== "false";
 
 const corsOptions: cors.CorsOptions = {
   origin(origin, callback) {
     if (!origin) return callback(null, true);
     const normalized = normalizeOrigin(origin);
-    if (allowedOrigins.has(normalized)) {
+    if (
+      allowedOrigins.has(normalized) ||
+      /\.(vercel\.app|netlify\.app|onrender\.com|replit\.dev|replit\.app)$/i.test(normalized) ||
+      normalized.includes("localhost") ||
+      normalized.includes("127.0.0.1")
+    ) {
       return callback(null, true);
     }
-    console.warn(`[CORS] Origine refusée : ${origin} (normalisée: ${normalized})`);
+    console.warn(`[CORS] Origine non whitelistée : ${origin} (normalisée: ${normalized})`);
     if (corsSoftMode) {
-      console.warn(`[CORS] SOFT_MODE actif -> origine tolérée temporairement : ${origin}`);
+      console.warn(`[CORS] SOFT_MODE actif -> origine tolérée : ${origin}`);
       return callback(null, true);
     }
-    return callback(new Error(`Origine non autorisée par CORS : ${origin}`));
+    return callback(null, false);
   },
   credentials: false,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-webhook-secret"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-webhook-secret", "Accept", "Origin", "X-Requested-With"],
   optionsSuccessStatus: 200,
   maxAge: 86400,
 };
