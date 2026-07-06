@@ -25,7 +25,28 @@ app.use(
     },
   }),
 );
-app.use(cors());
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "null",
+].filter(Boolean) as string[];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Origine non autorisée par la politique CORS."));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-webhook-secret"],
+    credentials: false,
+  }),
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

@@ -1,0 +1,46 @@
+name: Tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  integration:
+    name: Tests d'intégration (handlers mockés)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Aucun secret requis : mocks purs, aucun appel réseau.
+      - run: npm run test:integration
+
+  e2e:
+    name: Tests E2E (staging + base réelle)
+    runs-on: ubuntu-latest
+    # Ne lance l'E2E que si l'intégration passe : on économise le staging.
+    needs: integration
+    env:
+      API_BASE: ${{ secrets.E2E_API_BASE }}
+      SUPABASE_URL: ${{ secrets.E2E_SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.E2E_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.E2E_SUPABASE_SERVICE_ROLE_KEY }}
+      WEBHOOK_SECRET: ${{ secrets.E2E_WEBHOOK_SECRET }}
+      TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+      TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+      ITEM_NAME: "Netflix 1 mois"
+      ITEM_SERVICE: "Netflix"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Décommente si l'API n'est pas déjà déployée en staging et doit être lancée localement :
+      # - run: npm run start:staging &
+      # - run: npx wait-on "$API_BASE/health" --timeout 60000
+      - run: npm run test:e2e:ci

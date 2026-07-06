@@ -1,69 +1,79 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, Request } from "express";
+import rateLimit from "express-rate-limit";
+import crypto from "crypto";
 import { supabase } from "../lib/supabase";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import { computeCart } from "../config/prices";
 
 const router: IRouter = Router();
 
-router.post("/create-order", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      res.status(401).json({ error: "Token manquant" });
-      return;
-    }
-    const token = authHeader.replace("Bearer ", "");
+const createOrderLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const h = req.headers.authorization || "";
+    const token = h.startsWith("Bearer ") ? h.slice(7) : "";
+    return token || req.ip || "unknown";
+  },
+  message: { error: "Trop de commandes créées, réessayez dans une minute." },
+});
 
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email) {
+async function getAuthedEmail(req: Request): Promise<string | null> {
+  const h = req.headers.authorization || "";
+  if (!h.startsWith("Bearer ")) return null;
+  const token = h.slice(7).trim();
+  if (!token) return null;
+
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data?.user?.email) return null;
+  return data.user.email;
+}
+
+router.post("/create-order", createOrderLimiter, async (req, res) => {
+  try {
+    const email = await getAuthedEmail(req);
+    if (!email) {
       res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
 
-    const { items, amount } = req.body;
-    if (!items || !amount) {
-      res.status(400).json({ error: "Les items et le montant sont requis." });
+    const { items } = req.body;
+    const pricing = computeCart(items);
+    if (!pricing.ok) {
+      res.status(400).json({ error: pricing.error });
       return;
     }
 
-    // Generate a simple unique ID without any external dependencies to avoid build errors
-    const orderId = "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000000);
-    const assignedEmail = userData.user.email;
+    const orderId = "ORD-" + crypto.randomUUID();
 
-    const { error: insertError } = await supabase
-      .from("orders")
-      .insert({
-        order_id: orderId,
-        assigned_email: assignedEmail,
-        items: items,
-        amount: amount,
-        status: "pending"
-      });
+    const { error: insertError } = await supabase.from("orders").insert({
+      order_id: orderId,
+      assigned_email: email,
+      items: pricing.cleanItems,
+      amount: pricing.amount,
+      status: "pending",
+    });
 
     if (insertError) {
-      req.log.error({ insertError }, "Supabase error creating order");
-      res.status(500).json({ error: "Erreur Supabase: " + insertError.message + " | Details: " + insertError.details });
+      req.log?.error({ insertError }, "Supabase error creating order");
+      res.status(500).json({ error: "Erreur Supabase" });
       return;
     }
 
-    res.status(201).json({ order_id: orderId });
+    res.status(201).json({ order_id: orderId, amount: pricing.amount });
   } catch (err) {
-    req.log.error({ err }, "Unexpected error in POST /create-order");
+    req.log?.error({ err }, "Unexpected error in POST /create-order");
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
 });
 
 router.get("/my-orders", async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      res.status(401).json({ error: "Token manquant" });
-      return;
-    }
-    const token = authHeader.replace("Bearer ", "");
-
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email) {
+    const email = await getAuthedEmail(req);
+    if (!email) {
       res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
@@ -71,17 +81,18 @@ router.get("/my-orders", async (req, res) => {
     const { data, error } = await supabase
       .from("orders")
       .select("*")
-      .eq("assigned_email", userData.user.email);
+      .eq("assigned_email", email)
+      .order("created_at", { ascending: false });
 
     if (error) {
-      req.log.error({ error }, "Supabase error fetching orders");
-      res.status(500).json({ error: "Erreur lors de la récupération des commandes." });
+      req.log?.error({ error }, "Supabase error fetching orders");
+      res.status(500).json({ error: "Erreur lors de la récupération." });
       return;
     }
 
     res.json({ orders: data });
   } catch (err) {
-    req.log.error({ err }, "Unexpected error in GET /my-orders");
+    req.log?.error({ err }, "Unexpected error in GET /my-orders");
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
 });
@@ -311,31 +322,44 @@ router.post("/admin/update-order-status", async (req, res) => {
 });
 
 // GET user credentials from inventory
-router.get("/my-credentials", async (req, res) => {
+router.get("/my-credentials", async (req, res): Promise<void> => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = authHeader.replace("Bearer ", "");
+    const email = await getAuthedEmail(req);
+    if (!email) {
+      res.status(401).json({ error: "Token invalide." });
+      return;
+    }
 
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
+    const { data: userOrders, error: ordersError } = await supabase
+      .from("orders")
+      .select("order_id")
+      .eq("assigned_email", email)
+      .eq("status", "active")
+      .gt("expires_at", new Date().toISOString());
 
-    // Fetch orders for this user to get their order IDs
-    const { data: userOrders } = await supabase.from("orders").select("order_id").eq("assigned_email", userData.user.email);
-    if (!userOrders || userOrders.length === 0) return res.json({ credentials: [] });
+    if (ordersError) {
+      res.status(500).json({ error: "Erreur serveur" });
+      return;
+    }
+    if (!userOrders || userOrders.length === 0) {
+      res.json({ credentials: [] });
+      return;
+    }
 
-    const orderIds = userOrders.map(o => o.order_id);
+    const orderIds = userOrders.map((o) => o.order_id);
 
-    // Fetch assigned inventory for these orders
     const { data: credentials, error } = await supabase
       .from("inventory")
       .select("assigned_order_id, account_email, account_password, service, profile_name, profile_pin")
       .in("assigned_order_id", orderIds);
 
-    if (error) throw error;
+    if (error) {
+      res.status(500).json({ error: "Erreur serveur" });
+      return;
+    }
     res.json({ credentials: credentials || [] });
   } catch (err) {
-    req.log.error({ err }, "Error fetching credentials");
+    req.log?.error({ err }, "Error fetching credentials");
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
