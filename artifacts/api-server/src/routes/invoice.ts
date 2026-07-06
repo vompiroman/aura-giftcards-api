@@ -85,7 +85,8 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Respons
       .single();
 
     if (fetchError || !order) {
-      res.status(404).json({ error: "Commande introuvable." });
+      console.error(`[create-invoice] Order not found: ${order_id}. Supabase error:`, fetchError ? JSON.stringify(fetchError) : "no error, just empty result");
+      res.status(404).json({ error: "Commande introuvable. Si vous venez de la créer, veuillez réessayer dans quelques secondes." });
       return;
     }
 

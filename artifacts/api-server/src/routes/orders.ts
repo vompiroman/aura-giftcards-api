@@ -50,17 +50,24 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
 
     const orderId = "ORD-" + crypto.randomUUID();
 
-    const { error: insertError } = await supabase.from("orders").insert({
+    const { data: inserted, error: insertError } = await supabase.from("orders").insert({
       order_id: orderId,
       assigned_email: email,
       items: pricing.cleanItems,
       amount: pricing.amount,
       status: "pending",
-    });
+    }).select("order_id");
 
     if (insertError) {
       req.log?.error({ insertError }, "Supabase error creating order");
-      res.status(500).json({ error: "Erreur Supabase" });
+      console.error("[create-order] Supabase insert error:", JSON.stringify(insertError));
+      res.status(500).json({ error: "Erreur lors de la création de la commande: " + insertError.message });
+      return;
+    }
+
+    if (!inserted || inserted.length === 0) {
+      console.error("[create-order] Insert returned 0 rows. RLS may be blocking inserts. Check that SUPABASE_KEY is the service_role key, not the anon key.");
+      res.status(500).json({ error: "La commande n'a pas pu être enregistrée. Contactez le support." });
       return;
     }
 
