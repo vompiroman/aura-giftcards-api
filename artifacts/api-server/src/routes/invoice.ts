@@ -137,7 +137,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Respons
     if (!spRes.ok) {
       const detail = await spRes.text().catch(() => "");
       console.error(`[invoice] SlickPay error ${spRes.status} pour commande ${order_id}: ${detail}`);
-      res.status(502).json({ error: "Erreur du prestataire de paiement." });
+      res.status(502).json({ error: "Erreur du prestataire de paiement.", slickpay_status: spRes.status, slickpay_detail: detail });
       return;
     }
 
