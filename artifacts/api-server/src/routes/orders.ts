@@ -30,7 +30,7 @@ async function getAuthedEmail(req: Request): Promise<string | null> {
 
   const { data, error } = await supabase.auth.getUser(token);
   if (error || !data?.user?.email) return null;
-  return data.user.email;
+  return data.user.email.trim().toLowerCase();
 }
 
 router.post("/create-order", createOrderLimiter, async (req, res) => {
@@ -389,7 +389,7 @@ router.post("/client-credentials", async (req, res): Promise<any> => {
 
     const { data: order, error: orderError } = await supabase.from("orders").select("*").eq("order_id", order_id).single();
     if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
-    if (order.assigned_email !== userData.user.email) return res.status(403).json({ error: "Accès refusé" });
+    if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
 
     // Update items with credentials
     let items = Array.isArray(order.items) ? order.items : [];
@@ -449,7 +449,7 @@ router.post("/get-netflix-otp", async (req, res): Promise<any> => {
 
     const { data: order, error: orderError } = await supabase.from("orders").select("*").eq("order_id", order_id).single();
     if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
-    if (order.assigned_email !== userData.user.email) return res.status(403).json({ error: "Accès refusé" });
+    if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
 
     const { data: invItems, error: invError } = await supabase.from("inventory").select("*").eq("assigned_order_id", order_id);
     if (invError || !invItems || invItems.length === 0) return res.status(404).json({ error: "Aucun compte assigné" });

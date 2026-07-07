@@ -28,7 +28,7 @@ async function getAuthedEmail(req: Request): Promise<string | null> {
   if (!token) return null;
   const { data, error } = await supabase.auth.getUser(token);
   if (error || !data?.user?.email) return null;
-  return data.user.email;
+  return data.user.email.trim().toLowerCase();
 }
 
 // Construction des lignes SlickPay (exige { name, price, quantity })
@@ -90,7 +90,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Respons
       return;
     }
 
-    if (order.assigned_email.toLowerCase() !== email.toLowerCase()) {
+    if (order.assigned_email?.toLowerCase() !== email.toLowerCase()) {
       res.status(403).json({ error: "Accès refusé à cette commande." });
       return;
     }
