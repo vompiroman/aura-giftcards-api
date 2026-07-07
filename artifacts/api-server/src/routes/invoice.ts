@@ -120,6 +120,8 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Respons
       firstname: email.split("@")[0] || "Client",
       lastname: "Aura Stream",
       email,
+      address: "Alger, Algérie",
+      phone: "0550000000",
       items: finalItems,
     };
 
