@@ -287,7 +287,14 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       return;
     }
 
-    res.json({ orders: data });
+    let keyRole = "unknown";
+    try {
+      const k = process.env["SUPABASE_SERVICE_ROLE_KEY"] || process.env["SUPABASE_KEY"] || "";
+      const p = k.split(".");
+      if (p.length === 3) keyRole = JSON.parse(Buffer.from(p[1], "base64url").toString()).role;
+    } catch {}
+
+    res.json({ orders: data || [], debug_key_role: keyRole });
   } catch (err) {
     req.log.error({ err }, "Unexpected error in GET /admin/all-orders");
     res.status(500).json({ error: "Erreur interne du serveur." });
