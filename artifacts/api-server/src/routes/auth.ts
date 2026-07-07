@@ -4,6 +4,25 @@ import axios from "axios";
 
 const router: IRouter = Router();
 
+router.get("/diag-role", async (req, res) => {
+  const k = process.env["SUPABASE_SERVICE_ROLE_KEY"] || process.env["SUPABASE_KEY"] || "";
+  let role = "unknown";
+  try {
+    const parts = k.split(".");
+    if (parts.length === 3) {
+      const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+      role = payload.role;
+    }
+  } catch (e) {}
+  res.json({
+    status: "ok",
+    role,
+    has_service_role_var: Boolean(process.env["SUPABASE_SERVICE_ROLE_KEY"]),
+    has_key_var: Boolean(process.env["SUPABASE_KEY"]),
+    commit: "a2bb176"
+  });
+});
+
 router.post("/register", async (req, res) => {
   try {
     const { email, password, full_name } = req.body;
