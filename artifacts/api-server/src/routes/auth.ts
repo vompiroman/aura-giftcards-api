@@ -18,8 +18,9 @@ router.get("/diag-role", async (req, res) => {
     status: "ok",
     role,
     has_service_role_var: Boolean(process.env["SUPABASE_SERVICE_ROLE_KEY"]),
-    has_key_var: Boolean(process.env["SUPABASE_KEY"]),
-    commit: "a2bb176"
+    has_slickpay_key: Boolean(process.env.SLICKPAY_PUBLIC_KEY || process.env.SLICKPAY_API_KEY),
+    has_slickpay_webhook: Boolean(process.env.SLICKPAY_WEBHOOK_URL),
+    commit: "slickpay_diag_2"
   });
 });
 
