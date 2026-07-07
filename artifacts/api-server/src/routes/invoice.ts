@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
-import { supabase } from "../lib/supabase";
+import { supabaseAuth, supabaseAdmin as supabase } from "../lib/supabase";
 import { PRICES } from "../config/prices";
 
 const router = Router();
@@ -26,7 +26,7 @@ async function getAuthedEmail(req: Request): Promise<string | null> {
   if (!h.startsWith("Bearer ")) return null;
   const token = h.slice(7).trim();
   if (!token) return null;
-  const { data, error } = await supabase.auth.getUser(token);
+  const { data, error } = await supabaseAuth.auth.getUser(token);
   if (error || !data?.user?.email) return null;
   return data.user.email.trim().toLowerCase();
 }

@@ -1,7 +1,7 @@
 import { Router, type IRouter, Request } from "express";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
-import { supabase } from "../lib/supabase";
+import { supabaseAuth as supabase, supabaseAdmin } from "../lib/supabase";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { computeCart } from "../config/prices";
@@ -50,7 +50,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
 
     const orderId = "ORD-" + crypto.randomUUID();
 
-    const { data: inserted, error: insertError } = await supabase.from("orders").insert({
+    const { data: inserted, error: insertError } = await supabaseAdmin.from("orders").insert({
       order_id: orderId,
       assigned_email: email,
       items: pricing.cleanItems,
@@ -164,7 +164,7 @@ router.get("/validate-order", async (req, res): Promise<any> => {
 
     let accountAssignedMsg = "";
     if (invItem) {
-      await supabase.from("inventory").update({ is_used: true, assigned_order_id: id }).eq("id", invItem.id);
+      await supabaseAdmin.from("inventory").update({ is_used: true, assigned_order_id: id }).eq("id", invItem.id);
       accountAssignedMsg = `<p style="color: #1DB954; font-weight: bold; padding: 10px; border: 1px solid #1DB954; border-radius: 5px;">🎉 Un compte ${serviceName} a été automatiquement assigné et livré au client !</p>`;
     } else {
       accountAssignedMsg = `<p style="color: orange; font-weight: bold;">⚠️ Aucun compte en stock pour ${serviceName}. Pensez à ajouter le compte manuellement.</p>`;
@@ -387,7 +387,7 @@ router.post("/client-credentials", async (req, res): Promise<any> => {
       return res.status(400).json({ error: "Données manquantes" });
     }
 
-    const { data: order, error: orderError } = await supabase.from("orders").select("*").eq("order_id", order_id).single();
+    const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("*").eq("order_id", order_id).single();
     if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
     if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
 
@@ -404,7 +404,7 @@ router.post("/client-credentials", async (req, res): Promise<any> => {
       return item;
     });
 
-    const { error: updateError } = await supabase.from("orders").update({ items: updatedItems }).eq("order_id", order_id);
+    const { error: updateError } = await supabaseAdmin.from("orders").update({ items: updatedItems }).eq("order_id", order_id);
     if (updateError) throw updateError;
 
     // Notification Discord désormais gérée côté serveur par /client-credentials
@@ -447,11 +447,11 @@ router.post("/get-netflix-otp", async (req, res): Promise<any> => {
     const { order_id } = req.body;
     if (!order_id) return res.status(400).json({ error: "order_id requis." });
 
-    const { data: order, error: orderError } = await supabase.from("orders").select("*").eq("order_id", order_id).single();
+    const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("*").eq("order_id", order_id).single();
     if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
     if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
 
-    const { data: invItems, error: invError } = await supabase.from("inventory").select("*").eq("assigned_order_id", order_id);
+    const { data: invItems, error: invError } = await supabaseAdmin.from("inventory").select("*").eq("assigned_order_id", order_id);
     if (invError || !invItems || invItems.length === 0) return res.status(404).json({ error: "Aucun compte assigné" });
     
     const netflixAccount = invItems.find((i: any) => i.service.toLowerCase().includes("netflix"));
@@ -531,7 +531,7 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
-    const { data, error } = await supabase.from("inventory").select("*").order("created_at", { ascending: false });
+    const { data, error } = await supabaseAdmin.from("inventory").select("*").order("created_at", { ascending: false });
     if (error) throw error;
     res.json({ inventory: data || [] });
   } catch (err) {
@@ -557,14 +557,14 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
         profile_name: item.profile_name,
         profile_pin: item.profile_pin
       }));
-      const { error } = await supabase.from("inventory").insert(rows);
+      const { error } = await supabaseAdmin.from("inventory").insert(rows);
       if (error) throw error;
       return res.status(201).json({ success: true });
     } else {
       const { service, account_email, account_password, profile_name, profile_pin } = req.body;
       if (!service || !account_email || !account_password) return res.status(400).json({ error: "Données manquantes." });
 
-      const { error } = await supabase.from("inventory").insert({ service, account_email, account_password, profile_name, profile_pin });
+      const { error } = await supabaseAdmin.from("inventory").insert({ service, account_email, account_password, profile_name, profile_pin });
       if (error) throw error;
       res.status(201).json({ success: true });
     }
@@ -583,7 +583,7 @@ router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
-    const { error } = await supabase.from("inventory").delete().eq("id", req.params.id);
+    const { error } = await supabaseAdmin.from("inventory").delete().eq("id", req.params.id);
     if (error) throw error;
     res.json({ success: true });
   } catch (err) {
@@ -608,7 +608,7 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
     if (profile_name !== undefined) updates.profile_name = profile_name;
     if (profile_pin !== undefined) updates.profile_pin = profile_pin;
 
-    const { error } = await supabase.from("inventory").update(updates).eq("id", req.params.id);
+    const { error } = await supabaseAdmin.from("inventory").update(updates).eq("id", req.params.id);
     if (error) throw error;
     res.json({ success: true });
   } catch (err) {

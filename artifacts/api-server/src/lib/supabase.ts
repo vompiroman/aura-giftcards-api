@@ -22,9 +22,22 @@ try {
   // Ignorer si la clé n'est pas un JWT standard
 }
 
-export const supabase = createClient(supabaseUrl, supabaseKey, {
+// Client AUTH : utilisé UNIQUEMENT pour les appels d'authentification (.auth.signUp, .auth.signIn, .auth.getUser)
+export const supabaseAuth = createClient(supabaseUrl, supabaseKey, {
   auth: {
     autoRefreshToken: false,
     persistSession: false,
   },
 });
+
+// Client ADMIN / DB : utilisé pour toutes les requêtes base de données (.from, .rpc)
+// En ne l'utilisant JAMAIS pour .auth.*, son header Authorization n'est JAMAIS pollué par le token d'un utilisateur !
+export const supabaseAdmin = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false,
+  },
+});
+
+// Alias par défaut pointant sur supabaseAdmin pour que tous les appels .from() existants contournent RLS
+export const supabase = supabaseAdmin;

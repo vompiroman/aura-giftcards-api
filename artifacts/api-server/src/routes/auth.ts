@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { supabase } from "../lib/supabase";
+import { supabaseAuth as supabase } from "../lib/supabase";
 import axios from "axios";
 
 const router: IRouter = Router();
