@@ -568,8 +568,9 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
       if (error) throw error;
       res.status(201).json({ success: true });
     }
-  } catch (err) {
-    res.status(500).json({ error: "Erreur serveur" });
+  } catch (err: any) {
+    console.error("[admin/inventory POST] Error:", err?.message || err?.code || err);
+    res.status(500).json({ error: "Erreur serveur", details: err?.message || String(err) });
   }
 });
 
