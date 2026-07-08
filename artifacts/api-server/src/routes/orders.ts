@@ -513,6 +513,10 @@ router.post("/get-netflix-otp", async (req, res): Promise<any> => {
         clientInfo: { name: 'AuraStream', version: '1.0.0' }
       });
 
+      client.on('error', (err: any) => {
+        console.error(`[IMAP client error on ${host}]`, err.message || err);
+      });
+
       try {
         await client.connect();
         const lock = await client.getMailboxLock('INBOX');
