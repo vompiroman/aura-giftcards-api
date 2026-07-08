@@ -442,22 +442,42 @@ router.post("/client-credentials", async (req, res): Promise<any> => {
   }
 });
 
-function getImapHosts(email: string): { host: string; port: number; fallback?: string }[] {
-  const domain = email.toLowerCase().split('@')[1] || '';
-  const microsoftDomains = [
-    'outlook.fr', 'outlook.com', 'hotmail.fr', 'hotmail.com',
-    'hotmail.co.uk', 'live.fr', 'live.com', 'msn.com',
-  ];
-  if (microsoftDomains.includes(domain)) {
-    return [{ host: 'outlook.office365.com', port: 993, fallback: 'imap-mail.outlook.com' }];
+function resolveImapStrategy(acc: {
+  account_email: string;
+  account_password?: string;
+  imap_host?: string;
+  imap_port?: number;
+  imap_user?: string;
+  imap_password?: string;
+}): { host: string; port: number; user: string; pass: string } {
+  const email = acc.account_email;
+  const domain = (email.toLowerCase().split('@')[1] || '');
+  const user = acc.imap_user || email;
+  const pass = acc.imap_password || acc.account_password || '';
+
+  if (acc.imap_host) {
+    return {
+      host: acc.imap_host,
+      port: acc.imap_port || 993,
+      user,
+      pass
+    };
   }
+
   if (domain === 'gmail.com' || domain === 'googlemail.com') {
-    return [{ host: 'imap.gmail.com', port: 993 }];
+    return { host: 'imap.gmail.com', port: 993, user, pass };
   }
+
   if (domain.startsWith('yahoo.')) {
-    return [{ host: 'imap.mail.yahoo.com', port: 993 }];
+    return { host: 'imap.mail.yahoo.com', port: 993, user, pass };
   }
-  return [{ host: 'outlook.office365.com', port: 993, fallback: 'imap-mail.outlook.com' }];
+
+  const microsoft = ['outlook.fr','outlook.com','hotmail.fr','hotmail.com','hotmail.co.uk','live.fr','live.com','msn.com'];
+  if (microsoft.includes(domain)) {
+    return { host: 'outlook.office365.com', port: 993, user, pass };
+  }
+
+  return { host: `mail.${domain}`, port: 993, user, pass };
 }
 
 function extractNetflixCode(text: string, html: string): { code?: string; link?: string } {
@@ -487,77 +507,77 @@ router.post("/get-netflix-otp", async (req, res): Promise<any> => {
   if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
   if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
 
-  const { data: invItems, error: invError } = await supabaseAdmin.from("inventory").select("*").eq("assigned_order_id", order_id);
+  const { data: invItems, error: invError } = await supabaseAdmin
+    .from("inventory")
+    .select("account_email, account_password, imap_host, imap_port, imap_user, imap_password, service")
+    .eq("assigned_order_id", order_id);
+
   if (invError || !invItems || invItems.length === 0) return res.status(404).json({ error: "Aucun compte assigné" });
 
   const netflixAccount = invItems.find((i: any) => i.service.toLowerCase().includes("netflix"));
   if (!netflixAccount) return res.status(404).json({ error: "Pas de compte Netflix assigné" });
 
-  const email = netflixAccount.account_email;
-  const imapPass = netflixAccount.imap_password || netflixAccount.account_password;
-  if (!email || !imapPass) return res.status(400).json({ error: "Identifiants IMAP manquants dans l'inventaire" });
+  const strat = resolveImapStrategy(netflixAccount);
+  if (!strat.user || !strat.pass) return res.status(400).json({ error: "Identifiants IMAP manquants dans l'inventaire" });
 
-  const candidates = getImapHosts(email);
+  const hostsToTry = [strat.host, strat.host === 'outlook.office365.com' ? 'imap-mail.outlook.com' : ''].filter(Boolean);
   let lastError: any = null;
 
-  for (const candidate of candidates) {
-    const hostsToTry = [candidate.host, candidate.fallback].filter(Boolean) as string[];
-    for (const host of hostsToTry) {
-      const client = new ImapFlow({
-        host,
-        port: candidate.port,
-        secure: true,
-        tls: { rejectUnauthorized: false },
-        auth: { user: email, pass: imapPass },
-        logger: false,
-        clientInfo: { name: 'AuraStream', version: '1.0.0' }
-      });
+  for (const host of hostsToTry) {
+    const client = new ImapFlow({
+      host,
+      port: strat.port,
+      secure: true,
+      tls: { rejectUnauthorized: false },
+      auth: { user: strat.user, pass: strat.pass },
+      logger: false,
+      clientInfo: { name: 'AuraStream', version: '1.0.0' }
+    });
 
-      client.on('error', (err: any) => {
-        console.error(`[IMAP client error on ${host}]`, err.message || err);
-      });
+    client.on('error', (err: any) => {
+      console.error(`[IMAP client error on ${host}]`, err.message || err);
+    });
 
+    try {
+      await client.connect();
+      const lock = await client.getMailboxLock('INBOX');
       try {
-        await client.connect();
-        const lock = await client.getMailboxLock('INBOX');
-        try {
-          const since = new Date(Date.now() - 15 * 60 * 1000);
-          let foundCode = null;
-          let foundLink = null;
+        const since = new Date(Date.now() - 15 * 60 * 1000);
+        let foundCode = null;
+        let foundLink = null;
 
-          for await (let message of client.fetch({ since }, { envelope: true, source: true })) {
-            if (message.envelope?.from?.some((f: any) => f.address?.toLowerCase().includes('netflix'))) {
-              const parsed = await simpleParser(message.source as any);
-              const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '');
-              if (code) foundCode = code;
-              if (link) foundLink = link;
-              if (foundCode || foundLink) break;
-            }
+        for await (let message of client.fetch({ since }, { envelope: true, source: true })) {
+          if (message.envelope?.from?.some((f: any) => f.address?.toLowerCase().includes('netflix'))) {
+            const parsed = await simpleParser(message.source as any);
+            const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '');
+            if (code) foundCode = code;
+            if (link) foundLink = link;
+            if (foundCode || foundLink) break;
           }
-
-          if (foundCode || foundLink) {
-            return res.json({ success: true, code: foundCode, link: foundLink });
-          } else {
-            return res.status(404).json({ error: "Aucun email Netflix récent trouvé (15 dernières minutes). Demandez le code sur Netflix puis réessayez." });
-          }
-        } finally {
-          lock.release();
         }
-        await client.logout();
-      } catch (err: any) {
-        lastError = err;
-        try { await client.logout(); } catch {}
-        console.error(`[IMAP] Échec sur ${host}:`, err.responseText || err.message);
+
+        if (foundCode || foundLink) {
+          return res.json({ success: true, code: foundCode, link: foundLink });
+        } else {
+          return res.status(404).json({ error: "Aucun email Netflix récent trouvé (15 dernières minutes). Demandez le code sur Netflix puis réessayez." });
+        }
+      } finally {
+        lock.release();
       }
+      await client.logout();
+    } catch (err: any) {
+      lastError = err;
+      try { await client.logout(); } catch {}
+      console.error(`[IMAP] Échec sur ${host}:`, err.responseText || err.message);
     }
   }
 
   const raw = lastError?.responseText || lastError?.message || '';
   let userMessage = "Impossible de se connecter à la boîte mail.";
-  if (/AUTHENTICATIONFAILED|LOGIN failed|invalid credentials/i.test(raw)) {
-    userMessage = "Authentification refusée : vérifiez le mot de passe d'application Outlook (et non le mot de passe Netflix).";
+  if (/AUTHENTICATE failed|AUTHENTICATIONFAILED|invalid credentials/i.test(raw)) {
+    userMessage = "Basic Auth refusé par le serveur. Si vous utilisez Outlook, passez ce compte Netflix sur une adresse Gmail (@gmail.com) ou un domaine personnalisé pour débloquer l'IMAP.";
   } else if (/IMAP.*disabled|not enabled/i.test(raw)) {
-    userMessage = "L'accès IMAP est désactivé sur ce compte Microsoft. Activez-le dans les options Outlook.";
+    userMessage = "L'accès IMAP est désactivé sur ce compte. Activez-le dans les options du fournisseur.";
   }
 
   return res.status(502).json({ error: userMessage, detail: raw });
