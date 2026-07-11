@@ -157,7 +157,7 @@ router.get("/validate-order", async (req, res): Promise<any> => {
     const { data: invItem } = await supabase
       .from("inventory")
       .select("*")
-      .eq("service", serviceName)
+      .ilike("service", `%${serviceName}%`)
       .eq("is_used", false)
       .limit(1)
       .single();
@@ -518,14 +518,32 @@ router.post("/get-netflix-otp", async (req, res): Promise<any> => {
   if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
   if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
 
-  const { data: invItems, error: invError } = await supabaseAdmin
+  let { data: invItems, error: invError } = await supabaseAdmin
     .from("inventory")
-    .select("account_email, account_password, imap_host, imap_port, imap_user, imap_password, service")
+    .select("id, account_email, account_password, imap_host, imap_port, imap_user, imap_password, service")
     .eq("assigned_order_id", order_id);
 
-  if (invError || !invItems || invItems.length === 0) return res.status(404).json({ error: "Aucun compte assigné" });
+  if (!invItems || invItems.length === 0) {
+    const { data: availableAccount } = await supabaseAdmin
+      .from("inventory")
+      .select("id, account_email, account_password, imap_host, imap_port, imap_user, imap_password, service")
+      .ilike("service", "%netflix%")
+      .is("assigned_order_id", null)
+      .limit(1)
+      .single();
 
-  const netflixAccount = invItems.find((i: any) => i.service.toLowerCase().includes("netflix"));
+    if (availableAccount) {
+      await supabaseAdmin
+        .from("inventory")
+        .update({ is_used: true, assigned_order_id: order_id })
+        .eq("id", availableAccount.id);
+      invItems = [availableAccount];
+    }
+  }
+
+  if (!invItems || invItems.length === 0) return res.status(404).json({ error: "Aucun compte Netflix disponible en stock pour cette commande." });
+
+  const netflixAccount = invItems.find((i: any) => i.service.toLowerCase().includes("netflix")) || invItems[0];
   if (!netflixAccount) return res.status(404).json({ error: "Pas de compte Netflix assigné" });
 
   const strat = resolveImapStrategy(netflixAccount);
