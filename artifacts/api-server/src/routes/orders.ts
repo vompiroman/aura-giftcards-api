@@ -464,6 +464,16 @@ function resolveImapStrategy(acc: {
     };
   }
 
+  // Support automatique pour le domaine Catch-All aura-stream.com (Hostinger)
+  if (domain === 'aura-stream.com') {
+    return {
+      host: 'imap.hostinger.com',
+      port: 993,
+      user: acc.imap_user || 'admin@aura-stream.com',
+      pass: acc.imap_password || process.env.DEFAULT_IMAP_PASSWORD || 'Nassym.yaker2006'
+    };
+  }
+
   if (domain === 'gmail.com' || domain === 'googlemail.com') {
     return { host: 'imap.gmail.com', port: 993, user, pass };
   }
@@ -479,6 +489,7 @@ function resolveImapStrategy(acc: {
 
   return { host: `mail.${domain}`, port: 993, user, pass };
 }
+
 
 function extractNetflixCode(text: string, html: string): { code?: string; link?: string } {
   const haystack = `${text || ''}\n${html || ''}`;
