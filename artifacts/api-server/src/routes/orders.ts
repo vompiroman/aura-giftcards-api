@@ -560,7 +560,21 @@ function recipientMatches(parsed: any, target: string): boolean {
   return addresses.some(addr => addr.includes(lowerTarget));
 }
 
-function extractNetflixCode(text: string, html: string): { code?: string; link?: string } {
+function extractNetflixCode(text: string, html: string, subject?: string): { code?: string; link?: string } {
+  const lowerSubject = (subject || '').toLowerCase();
+  const forbiddenKeywords = [
+    'mot de passe',
+    'password',
+    'réinitialis',
+    'reset',
+    'changement d\'adresse',
+    'update your email',
+    'change your email'
+  ];
+  if (forbiddenKeywords.some(kw => lowerSubject.includes(kw))) {
+    return {};
+  }
+
   const haystack = `${text || ''}\n${html || ''}`;
   const linkMatch = haystack.match(
     /https?:\/\/[^\s"'<>]*netflix\.com\/[^\s"'<>]*(?:account\/travel\/verify|account\/update-primary-location|verify|nftoken|EMAIL_)[^\s"'<>]*/i
@@ -568,7 +582,7 @@ function extractNetflixCode(text: string, html: string): { code?: string; link?:
 
   let code: string | undefined;
   const near = haystack.match(
-    /(?:code|vérification|verification|connexion|login)[^0-9]{0,40}(\d{4,6})/i
+    /(?:code|vérification|verification|connexion|login|temporaire)[^0-9]{0,40}(\d{4,6})/i
   );
   if (near) {
     code = near[1];
@@ -675,7 +689,7 @@ router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
               const parsed = await simpleParser(message.source as any);
               if (targetEmail && !recipientMatches(parsed, targetEmail)) continue;
 
-              const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '');
+              const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '', parsed.subject);
               if (code || link) {
                 const msgTime = message.envelope?.date ? new Date(message.envelope.date).getTime() : Date.now();
                 const msgUid = message.uid || 0;
