@@ -663,6 +663,7 @@ router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
       const lock = await client.getMailboxLock('INBOX');
       try {
         const since = new Date(Date.now() - 15 * 60 * 1000);
+        let latestTimestamp = 0;
         let foundCode = null;
         let foundLink = null;
 
@@ -673,9 +674,14 @@ router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
             if (targetEmail && !recipientMatches(parsed, targetEmail)) continue;
 
             const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '');
-            if (code) foundCode = code;
-            if (link) foundLink = link;
-            if (foundCode || foundLink) break;
+            if (code || link) {
+              const msgTime = message.envelope?.date ? new Date(message.envelope.date).getTime() : Date.now();
+              if (msgTime >= latestTimestamp) {
+                latestTimestamp = msgTime;
+                if (code) foundCode = code;
+                if (link) foundLink = link;
+              }
+            }
           }
         }
 
