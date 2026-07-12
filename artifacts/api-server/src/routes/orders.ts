@@ -88,7 +88,7 @@ router.get("/my-orders", async (req, res): Promise<any> => {
       return;
     }
 
-    const { data, error } = await supabase
+    const { data: orders, error } = await supabase
       .from("orders")
       .select("*")
       .eq("assigned_email", email)
@@ -100,7 +100,37 @@ router.get("/my-orders", async (req, res): Promise<any> => {
       return;
     }
 
-    res.json({ orders: data });
+    if (!orders || orders.length === 0) {
+      return res.json({ orders: [] });
+    }
+
+    const orderIds = orders.map((o: any) => o.order_id || o.id).filter(Boolean);
+    const { data: accounts } = await supabaseAdmin
+      .from("inventory")
+      .select("assigned_order_id, account_email, profile_name, profile_pin, service")
+      .in("assigned_order_id", orderIds);
+
+    const accountByOrderId = new Map(
+      (accounts || []).map((a: any) => [a.assigned_order_id, a])
+    );
+
+    const enrichedOrders = orders.map((o: any) => {
+      const acc = accountByOrderId.get(o.order_id) || accountByOrderId.get(o.id);
+      return {
+        ...o,
+        account:
+          o.status === "active" && acc
+            ? {
+                email: acc.account_email,
+                profile_name: acc.profile_name ?? null,
+                profile_pin: acc.profile_pin ?? null,
+                service: acc.service,
+              }
+            : null,
+      };
+    });
+
+    res.json({ orders: enrichedOrders });
   } catch (err) {
     req.log?.error({ err }, "Unexpected error in GET /my-orders");
     res.status(500).json({ error: "Erreur interne du serveur." });
