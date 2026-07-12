@@ -5,6 +5,7 @@ import { supabaseAuth as supabase, supabaseAdmin } from "../lib/supabase";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { computeCart } from "../config/prices";
+import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
 
 const router: IRouter = Router();
 
@@ -743,6 +744,24 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+router.get("/health/mailbox", async (req, res): Promise<any> => {
+  try {
+    const health = await checkMailboxHealth();
+    res.json(health);
+  } catch (err: any) {
+    res.status(500).json({ status: "error", error: err?.message || String(err) });
+  }
+});
+
+router.post("/cron/imap-cleanup", async (req, res): Promise<any> => {
+  try {
+    const result = await runCleanupCycle();
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
   }
 });
 
