@@ -6,6 +6,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { computeCart } from "../config/prices";
 import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
+import { isAdmin } from "../middleware/requireAdmin";
 
 const router: IRouter = Router();
 
@@ -106,6 +107,12 @@ router.get("/my-orders", async (req, res): Promise<any> => {
   }
 });
 
+function escapeHtml(input: string): string {
+  return String(input).replace(/[&<>"'/]/g, (c) => (
+    { '&': '&', '<': '<', '>': '>', '"': '"', "'": '&#39;', '/': '&#x2F;' }[c] as string
+  ));
+}
+
 router.get("/validate-order", async (req, res): Promise<any> => {
   try {
     const { id } = req.query;
@@ -113,24 +120,26 @@ router.get("/validate-order", async (req, res): Promise<any> => {
       res.status(400).send("ID manquant");
       return;
     }
-    
+
+    const safeId = escapeHtml(id);
+
     // Fetch the order
-    const { data: order, error: fetchError } = await supabase
+    const { data: order, error: fetchError } = await supabaseAdmin
       .from("orders")
       .select("*")
       .eq("order_id", id)
       .single();
-      
+
     if (fetchError || !order) {
       res.status(404).send("Commande non trouvée");
       return;
     }
-    
+
     if (order.status === 'active') {
       res.send(`
         <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
           <h1 style="color: #1DB954;">✅ Déjà Validée !</h1>
-          <p>La commande <strong>${id}</strong> est déjà active.</p>
+          <p>La commande <strong>${safeId}</strong> est déjà active.</p>
         </div>
       `);
       return;
@@ -139,7 +148,7 @@ router.get("/validate-order", async (req, res): Promise<any> => {
     let durationMonths = 1;
     let serviceName = "netflix";
     const itemsText = JSON.stringify(order.items || []).toLowerCase();
-    
+
     if (itemsText.includes("spotify")) serviceName = "spotify";
     else if (itemsText.includes("crunchyroll")) serviceName = "crunchyroll";
 
@@ -150,12 +159,12 @@ router.get("/validate-order", async (req, res): Promise<any> => {
     } else if (itemsText.includes("6 mois") || itemsText.includes("6 months")) {
       durationMonths = 6;
     }
-    
+
     const expiresAt = new Date();
     expiresAt.setMonth(expiresAt.getMonth() + durationMonths);
-    
-    // Auto-assign from inventory
-    const { data: invItem } = await supabase
+
+    // Auto-assign from inventory using supabaseAdmin
+    const { data: invItem } = await supabaseAdmin
       .from("inventory")
       .select("*")
       .ilike("service", `%${serviceName}%`)
@@ -166,28 +175,28 @@ router.get("/validate-order", async (req, res): Promise<any> => {
     let accountAssignedMsg = "";
     if (invItem) {
       await supabaseAdmin.from("inventory").update({ is_used: true, assigned_order_id: id }).eq("id", invItem.id);
-      accountAssignedMsg = `<p style="color: #1DB954; font-weight: bold; padding: 10px; border: 1px solid #1DB954; border-radius: 5px;">🎉 Un compte ${serviceName} a été automatiquement assigné et livré au client !</p>`;
+      accountAssignedMsg = `<p style="color: #1DB954; font-weight: bold; padding: 10px; border: 1px solid #1DB954; border-radius: 5px;">🎉 Un compte ${escapeHtml(serviceName)} a été automatiquement assigné et livré au client !</p>`;
     } else {
-      accountAssignedMsg = `<p style="color: orange; font-weight: bold;">⚠️ Aucun compte en stock pour ${serviceName}. Pensez à ajouter le compte manuellement.</p>`;
+      accountAssignedMsg = `<p style="color: orange; font-weight: bold;">⚠️ Aucun compte en stock pour ${escapeHtml(serviceName)}. Pensez à ajouter le compte manuellement.</p>`;
     }
 
-    const { error: updateError } = await supabase
+    const { error: updateError } = await supabaseAdmin
       .from("orders")
       .update({
         status: "active",
         expires_at: expiresAt.toISOString()
       })
       .eq("order_id", id);
-      
+
     if (updateError) {
-      res.status(500).send("Erreur lors de la validation : " + updateError.message);
+      res.status(500).send("Erreur lors de la validation : " + escapeHtml(updateError.message));
       return;
     }
-    
+
     res.send(`
       <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
         <h1 style="color: #1DB954;">✅ Commande Validée !</h1>
-        <p>La commande <strong>${id}</strong> est maintenant active.</p>
+        <p>La commande <strong>${safeId}</strong> est maintenant active.</p>
         <p>Date d'expiration automatique : <strong>${expiresAt.toLocaleDateString('fr-FR')}</strong></p>
         ${accountAssignedMsg}
       </div>
@@ -198,7 +207,19 @@ router.get("/validate-order", async (req, res): Promise<any> => {
   }
 });
 
-router.get("/cron/reminders", async (req, res): Promise<any> => {
+function validCronSecret(header: string | undefined): boolean {
+  const expected = process.env.CRON_SECRET;
+  if (!expected) return true;
+  if (!header) return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+router.post("/cron/reminders", async (req, res): Promise<any> => {
+  if (process.env.CRON_SECRET && !validCronSecret(req.get("x-cron-secret"))) {
+    return res.status(401).json({ error: "Non autorisé" });
+  }
   try {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) {
@@ -270,9 +291,7 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       return;
     }
     
-    // Authorization check
-    const adminEmail = process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com";
-    if (userData.user.email !== adminEmail) {
+    if (!isAdmin(userData.user.email)) {
       res.status(403).json({ error: "Accès refusé. Vous n'êtes pas administrateur." });
       return;
     }
@@ -288,14 +307,7 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       return;
     }
 
-    let keyRole = "unknown";
-    try {
-      const k = process.env["SUPABASE_SERVICE_ROLE_KEY"] || process.env["SUPABASE_KEY"] || "";
-      const p = k.split(".");
-      if (p.length === 3) keyRole = JSON.parse(Buffer.from(p[1], "base64url").toString()).role;
-    } catch {}
-
-    res.json({ orders: data || [], debug_key_role: keyRole });
+    res.json({ orders: data || [] });
   } catch (err) {
     req.log.error({ err }, "Unexpected error in GET /admin/all-orders");
     res.status(500).json({ error: "Erreur interne du serveur." });
@@ -311,8 +323,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
 
-    const adminEmails = ["admin@aura-stream.com", "vompiroman@gmail.com", process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com"];
-    if (!adminEmails.includes(userData.user.email)) {
+    if (!isAdmin(userData.user.email)) {
       return res.status(403).json({ error: "Accès refusé. Admin requis." });
     }
 
@@ -424,7 +435,7 @@ router.post("/client-credentials", async (req, res): Promise<any> => {
       if (service.toLowerCase().includes('spotify')) icon = '🎵';
       else if (service.toLowerCase().includes('crunchyroll')) icon = '🍥';
 
-      const content = `${icon} **Nouveau compte ${service} à activer !**\n**Commande :** ${order_id}\n**Email :** ${email}\n**Mot de passe :** ${password}\n**Numéro WhatsApp :** ${whatsapp}\n\n[🛠️ Valider et activer la commande](${validationLink})`;
+      const content = `${icon} **Nouveau compte ${service} à activer !**\n**Commande :** ${order_id}\n**Email :** ${email}\n**Numéro WhatsApp :** ${whatsapp}\n*(Identifiants sécurisés dans l'application)*\n\n[🛠️ Valider et activer la commande](${validationLink})`;
 
       try {
         await fetch(webhookUrl, {
@@ -471,7 +482,7 @@ function resolveImapStrategy(acc: {
       host: 'imap.hostinger.com',
       port: 993,
       user: acc.imap_user || 'admin@aura-stream.com',
-      pass: acc.imap_password || process.env.DEFAULT_IMAP_PASSWORD || 'Nassym.yaker2006'
+      pass: acc.imap_password || process.env.DEFAULT_IMAP_PASSWORD || process.env.IMAP_ADMIN_PASS || ''
     };
   }
 
@@ -646,11 +657,11 @@ router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
       } finally {
         lock.release();
       }
-      await client.logout();
     } catch (err: any) {
       lastError = err;
-      try { await client.logout(); } catch {}
       console.error(`[IMAP] Échec sur ${host}:`, err.responseText || err.message);
+    } finally {
+      try { await client.logout(); } catch {}
     }
   }
 
@@ -673,7 +684,7 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || userData.user.email !== (process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com")) {
+    if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
@@ -691,7 +702,7 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || userData.user.email !== (process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com")) {
+    if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
@@ -726,7 +737,7 @@ router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || userData.user.email !== (process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com")) {
+    if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
@@ -744,7 +755,7 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || userData.user.email !== (process.env["ADMIN_EMAIL"] || "nassym.yak@gmail.com")) {
+    if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
@@ -772,14 +783,7 @@ router.get("/health/mailbox", async (req, res): Promise<any> => {
   }
 });
 
-function validCronSecret(header: string | undefined): boolean {
-  const expected = process.env.CRON_SECRET;
-  if (!expected) return true;
-  if (!header) return false;
-  const a = Buffer.from(header);
-  const b = Buffer.from(expected);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
+
 
 router.post("/cron/imap-cleanup", async (req, res): Promise<any> => {
   if (process.env.CRON_SECRET && !validCronSecret(req.get("x-cron-secret"))) {

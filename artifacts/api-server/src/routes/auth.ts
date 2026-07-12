@@ -4,25 +4,6 @@ import axios from "axios";
 
 const router: IRouter = Router();
 
-router.get("/diag-role", async (req, res) => {
-  const k = process.env["SUPABASE_SERVICE_ROLE_KEY"] || process.env["SUPABASE_KEY"] || "";
-  let role = "unknown";
-  try {
-    const parts = k.split(".");
-    if (parts.length === 3) {
-      const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
-      role = payload.role;
-    }
-  } catch (e) {}
-  res.json({
-    status: "ok",
-    role,
-    has_service_role_var: Boolean(process.env["SUPABASE_SERVICE_ROLE_KEY"]),
-    has_slickpay_key: Boolean(process.env.SLICKPAY_PUBLIC_KEY || process.env.SLICKPAY_API_KEY),
-    has_slickpay_webhook: Boolean(process.env.SLICKPAY_WEBHOOK_URL),
-    commit: "slickpay_address_1"
-  });
-});
 
 router.post("/register", async (req, res) => {
   try {
@@ -159,7 +140,7 @@ router.post("/forgot-password", async (req, res) => {
       return;
     }
     
-    const origin = req.headers.origin || "http://localhost:3000";
+    const origin = (process.env.FRONTEND_URL || "https://aura-stream.netlify.app").replace(/\/$/, "");
     
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${origin}/?type=recovery`,

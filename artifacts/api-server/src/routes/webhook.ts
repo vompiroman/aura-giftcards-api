@@ -27,8 +27,23 @@ function validSecret(received: unknown): boolean {
 function durationFromItems(items: any[]): number {
   let max = 1;
   for (const it of items || []) {
-    const m = /(\d+)\s*mois/i.exec(String(it?.name || ""));
-    if (m) max = Math.max(max, parseInt(m[1], 10));
+    const text = String(it?.name || "").toLowerCase();
+    if (text.includes("1 an") || text.includes("1 year") || text.includes("12 mois") || text.includes("سنة")) {
+      max = Math.max(max, 12);
+    } else if (text.includes("6 mois") || text.includes("6 months")) {
+      max = Math.max(max, 6);
+    } else if (text.includes("3 mois") || text.includes("3 months")) {
+      max = Math.max(max, 3);
+    } else if (text.includes("2 mois") || text.includes("2 months") || text.includes("شهران")) {
+      max = Math.max(max, 2);
+    } else {
+      const m = /(\d+)\s*(mois|month|ans?|years?)/i.exec(text);
+      if (m) {
+        let val = parseInt(m[1], 10);
+        if (m[2].startsWith("an") || m[2].startsWith("year")) val *= 12;
+        max = Math.max(max, val);
+      }
+    }
   }
   return max;
 }

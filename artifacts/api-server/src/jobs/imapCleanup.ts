@@ -16,7 +16,7 @@ function loadConfig(): CleanupConfig {
   const host = process.env.IMAP_ADMIN_HOST || 'imap.hostinger.com';
   const port = Number(process.env.IMAP_ADMIN_PORT || 993);
   const user = process.env.IMAP_ADMIN_USER || 'admin@aura-stream.com';
-  const pass = process.env.IMAP_ADMIN_PASS || process.env.DEFAULT_IMAP_PASSWORD || 'Nassym.yaker2006';
+  const pass = process.env.IMAP_ADMIN_PASS || process.env.DEFAULT_IMAP_PASSWORD || '';
 
   return {
     host,

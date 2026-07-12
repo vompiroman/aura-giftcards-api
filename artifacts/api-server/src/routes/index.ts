@@ -4,7 +4,6 @@ import giftCardsRouter from "./gift-cards";
 import invoiceRouter from "./invoice";
 import webhookRouter from "./webhook";
 import authRouter from "./auth";
-import netflixCodeRouter from "./netflix-code";
 import ordersRouter from "./orders";
 import adminRouter from "./admin";
 
@@ -15,7 +14,6 @@ router.use(giftCardsRouter);
 router.use(invoiceRouter);
 router.use(webhookRouter);
 router.use(authRouter);
-router.use(netflixCodeRouter);
 router.use(ordersRouter);
 router.use(adminRouter);
 

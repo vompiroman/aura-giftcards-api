@@ -1,10 +1,22 @@
 import { Request, Response, NextFunction } from "express";
 import { supabaseAuth as supabase } from "../lib/supabase";
 
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
-  .split(",")
-  .map((e) => e.trim().toLowerCase())
-  .filter(Boolean);
+export function getAdminEmails(): Set<string> {
+  const list = [
+    ...(process.env.ADMIN_EMAILS || "").split(","),
+    process.env.ADMIN_EMAIL || "nassym.yak@gmail.com",
+    "admin@aura-stream.com",
+    "vompiroman@gmail.com"
+  ]
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  return new Set(list);
+}
+
+export function isAdmin(email?: string | null): boolean {
+  if (!email) return false;
+  return getAdminEmails().has(email.toLowerCase().trim());
+}
 
 export interface AuthedRequest extends Request {
   adminEmail?: string;
@@ -34,7 +46,7 @@ export async function requireAdmin(
       return;
     }
 
-    if (!ADMIN_EMAILS.includes(email)) {
+    if (!isAdmin(email)) {
       res.status(404).json({ error: "Not found." });
       return;
     }
