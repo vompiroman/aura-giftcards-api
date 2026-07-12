@@ -491,16 +491,49 @@ function resolveImapStrategy(acc: {
 }
 
 
+function recipientMatches(parsed: any, target: string): boolean {
+  if (!target) return true;
+  const lowerTarget = target.toLowerCase().trim();
+  const collect = (addrObj: any): string[] => {
+    if (!addrObj) return [];
+    const list = Array.isArray(addrObj) ? addrObj : [addrObj];
+    return list.flatMap((a: any) => (a.value || []).map((v: any) => (v.address || '').toLowerCase()));
+  };
+
+  const addresses = [
+    ...collect(parsed.to),
+    ...collect(parsed.cc),
+    ...collect(parsed.bcc),
+  ];
+
+  const headerKeys = ['delivered-to', 'x-envelope-to', 'x-original-to', 'x-forwarded-to'];
+  for (const key of headerKeys) {
+    const raw = parsed.headers?.get?.(key);
+    if (raw) {
+      const val = Array.isArray(raw) ? raw.join(' ') : String(raw);
+      if (val.toLowerCase().includes(lowerTarget)) return true;
+    }
+  }
+
+  return addresses.some(addr => addr.includes(lowerTarget));
+}
+
 function extractNetflixCode(text: string, html: string): { code?: string; link?: string } {
   const haystack = `${text || ''}\n${html || ''}`;
   const linkMatch = haystack.match(
     /https?:\/\/[^\s"'<>]*netflix\.com\/[^\s"'<>]*(?:account\/travel\/verify|account\/update-primary-location|verify|nftoken|EMAIL_)[^\s"'<>]*/i
   );
+
   let code: string | undefined;
-  const code4 = haystack.match(/\b(\d{4})\b(?!\d)/g);
-  const code6 = haystack.match(/\b(\d{6})\b(?!\d)/g);
-  if (code6 && code6.length) code = code6[0];
-  else if (code4 && code4.length) code = code4[0];
+  const near = haystack.match(
+    /(?:code|vérification|verification|connexion|login)[^0-9]{0,40}(\d{4,6})/i
+  );
+  if (near) {
+    code = near[1];
+  } else {
+    code = haystack.match(/\b\d{6}\b/)?.[0] || haystack.match(/\b\d{4}\b/)?.[0];
+  }
+
   return { code, link: linkMatch ? linkMatch[0] : undefined };
 }
 
@@ -575,9 +608,12 @@ router.post("/get-netflix-otp", async (req, res): Promise<any> => {
         let foundCode = null;
         let foundLink = null;
 
+        const targetEmail = netflixAccount.account_email;
         for await (let message of client.fetch({ since }, { envelope: true, source: true })) {
           if (message.envelope?.from?.some((f: any) => f.address?.toLowerCase().includes('netflix'))) {
             const parsed = await simpleParser(message.source as any);
+            if (targetEmail && !recipientMatches(parsed, targetEmail)) continue;
+
             const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '');
             if (code) foundCode = code;
             if (link) foundLink = link;
