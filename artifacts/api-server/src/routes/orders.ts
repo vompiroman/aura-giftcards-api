@@ -538,7 +538,15 @@ function extractNetflixCode(text: string, html: string): { code?: string; link?:
   return { code, link: linkMatch ? linkMatch[0] : undefined };
 }
 
-router.post("/get-netflix-otp", async (req, res): Promise<any> => {
+const otpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Trop de tentatives. Réessayez dans une minute." },
+});
+
+router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
   const { order_id } = req.body;
   if (!order_id) return res.status(400).json({ error: "order_id manquant." });
 
@@ -550,7 +558,12 @@ router.post("/get-netflix-otp", async (req, res): Promise<any> => {
 
   const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("*").eq("order_id", order_id).single();
   if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
-  if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
+  if (
+    order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase() &&
+    order.user_id !== userData.user.id
+  ) {
+    return res.status(404).json({ error: "Commande introuvable" });
+  }
 
   let { data: invItems, error: invError } = await supabaseAdmin
     .from("inventory")
@@ -594,6 +607,9 @@ router.post("/get-netflix-otp", async (req, res): Promise<any> => {
       tls: { rejectUnauthorized: false },
       auth: { user: strat.user, pass: strat.pass },
       logger: false,
+      connectionTimeout: 10_000,
+      greetingTimeout: 5_000,
+      socketTimeout: 30_000,
       clientInfo: { name: 'AuraStream', version: '1.0.0' }
     });
 
@@ -756,13 +772,21 @@ router.get("/health/mailbox", async (req, res): Promise<any> => {
   }
 });
 
+function validCronSecret(header: string | undefined): boolean {
+  const expected = process.env.CRON_SECRET;
+  if (!expected) return true;
+  if (!header) return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 router.post("/cron/imap-cleanup", async (req, res): Promise<any> => {
-  try {
-    const result = await runCleanupCycle();
-    res.json({ success: true, ...result });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err?.message || String(err) });
+  if (process.env.CRON_SECRET && !validCronSecret(req.get("x-cron-secret"))) {
+    return res.status(401).json({ error: "Non autorisé" });
   }
+  res.status(202).json({ accepted: true });
+  runCleanupCycle().catch((e) => console.error("[cleanup] Échec via endpoint :", e?.message || e));
 });
 
 export default router;
