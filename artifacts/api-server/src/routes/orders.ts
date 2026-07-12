@@ -663,32 +663,40 @@ router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
       const lock = await client.getMailboxLock('INBOX');
       try {
         const since = new Date(Date.now() - 15 * 60 * 1000);
-        let latestTimestamp = 0;
-        let foundCode = null;
-        let foundLink = null;
-
         const targetEmail = netflixAccount.account_email;
-        for await (let message of client.fetch({ since }, { envelope: true, source: true })) {
-          if (message.envelope?.from?.some((f: any) => f.address?.toLowerCase().includes('netflix'))) {
-            const parsed = await simpleParser(message.source as any);
-            if (targetEmail && !recipientMatches(parsed, targetEmail)) continue;
+        let bestCode = null;
+        let bestLink = null;
+        let bestTime = 0;
+        let bestUid = 0;
 
-            const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '');
-            if (code || link) {
-              const msgTime = message.envelope?.date ? new Date(message.envelope.date).getTime() : Date.now();
-              if (msgTime >= latestTimestamp) {
-                latestTimestamp = msgTime;
-                if (code) foundCode = code;
-                if (link) foundLink = link;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          for await (let message of client.fetch({ since }, { envelope: true, source: true })) {
+            if (message.envelope?.from?.some((f: any) => f.address?.toLowerCase().includes('netflix'))) {
+              const parsed = await simpleParser(message.source as any);
+              if (targetEmail && !recipientMatches(parsed, targetEmail)) continue;
+
+              const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '');
+              if (code || link) {
+                const msgTime = message.envelope?.date ? new Date(message.envelope.date).getTime() : Date.now();
+                const msgUid = message.uid || 0;
+                if (msgTime > bestTime || (msgTime === bestTime && msgUid >= bestUid)) {
+                  bestTime = msgTime;
+                  bestUid = msgUid;
+                  if (code) bestCode = code;
+                  if (link) bestLink = link;
+                }
               }
             }
           }
+
+          if (bestCode || bestLink) break;
+          if (attempt < 3) await new Promise(r => setTimeout(r, 2500));
         }
 
-        if (foundCode || foundLink) {
-          return res.json({ success: true, code: foundCode, link: foundLink });
+        if (bestCode || bestLink) {
+          return res.json({ success: true, code: bestCode, link: bestLink });
         } else {
-          return res.status(404).json({ error: "Aucun email Netflix récent trouvé (15 dernières minutes). Demandez le code sur Netflix puis réessayez." });
+          return res.status(404).json({ error: "Aucun email Netflix récent trouvé. Assurez-vous d'avoir demandé le code sur Netflix puis réessayez dans quelques secondes." });
         }
       } finally {
         lock.release();
