@@ -10,7 +10,7 @@ export const PRICES: Record<string, number> = {
   "Spotify 2 mois": 900,
   "Spotify 3 mois": 2400,
   "Crunchyroll 1 mois": 500,
-  "Crunchyroll 3 mois": 3200,
+  "Crunchyroll 3 mois": 1200,
   "Crunchyroll 1 an": 3000,
 };
 

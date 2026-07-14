@@ -4,9 +4,7 @@ import { supabaseAuth as supabase } from "../lib/supabase";
 export function getAdminEmails(): Set<string> {
   const list = [
     ...(process.env.ADMIN_EMAILS || "").split(","),
-    process.env.ADMIN_EMAIL || "nassym.yak@gmail.com",
-    "admin@aura-stream.com",
-    "vompiroman@gmail.com"
+    process.env.ADMIN_EMAIL || "admin@aura-stream.com"
   ]
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);

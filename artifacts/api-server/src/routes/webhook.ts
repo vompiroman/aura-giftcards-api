@@ -1,7 +1,7 @@
 import { Router, Request } from "express";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
-import { supabase } from "../lib/supabase";
+import { supabaseAdmin as supabase } from "../lib/supabase";
 import { notifyAdmin } from "../lib/notifyAdmin";
 
 const router = Router();

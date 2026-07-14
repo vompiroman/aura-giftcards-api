@@ -88,7 +88,7 @@ router.get("/my-orders", async (req, res): Promise<any> => {
       return;
     }
 
-    const { data: orders, error } = await supabase
+    const { data: orders, error } = await supabaseAdmin
       .from("orders")
       .select("*")
       .eq("assigned_email", email)
@@ -145,95 +145,30 @@ function escapeHtml(input: string): string {
 
 router.get("/validate-order", async (req, res): Promise<any> => {
   try {
-    const { id } = req.query;
-    if (!id || typeof id !== 'string') {
-      res.status(400).send("ID manquant");
-      return;
+    const email = await getAuthedEmail(req);
+    const orderId = String(req.query.id || "");
+    if (!/^ORD-[A-Za-z0-9-]{6,40}$/.test(orderId)) {
+      return res.status(400).json({ error: "Identifiant de commande invalide." });
     }
 
-    const safeId = escapeHtml(id);
-
-    // Fetch the order
     const { data: order, error: fetchError } = await supabaseAdmin
       .from("orders")
-      .select("*")
-      .eq("order_id", id)
+      .select("order_id, status, assigned_email, expires_at")
+      .eq("order_id", orderId)
       .single();
 
     if (fetchError || !order) {
-      res.status(404).send("Commande non trouvée");
-      return;
+      return res.status(404).json({ error: "Commande introuvable." });
     }
 
-    if (order.status === 'active') {
-      res.send(`
-        <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-          <h1 style="color: #1DB954;">✅ Déjà Validée !</h1>
-          <p>La commande <strong>${safeId}</strong> est déjà active.</p>
-        </div>
-      `);
-      return;
+    if (!email || (order.assigned_email?.toLowerCase() !== email.toLowerCase() && !isAdmin(email))) {
+      return res.status(403).json({ error: "Accès refusé." });
     }
 
-    let durationMonths = 1;
-    let serviceName = "netflix";
-    const itemsText = JSON.stringify(order.items || []).toLowerCase();
-
-    if (itemsText.includes("spotify")) serviceName = "spotify";
-    else if (itemsText.includes("crunchyroll")) serviceName = "crunchyroll";
-
-    if (itemsText.includes("2 mois") || itemsText.includes("2 months") || itemsText.includes("شهران")) {
-      durationMonths = 2;
-    } else if (itemsText.includes("1 an") || itemsText.includes("1 year") || itemsText.includes("سنة واحدة")) {
-      durationMonths = 12;
-    } else if (itemsText.includes("6 mois") || itemsText.includes("6 months")) {
-      durationMonths = 6;
-    }
-
-    const expiresAt = new Date();
-    expiresAt.setMonth(expiresAt.getMonth() + durationMonths);
-
-    // Auto-assign from inventory using supabaseAdmin
-    const { data: invItem } = await supabaseAdmin
-      .from("inventory")
-      .select("*")
-      .ilike("service", `%${serviceName}%`)
-      .eq("is_used", false)
-      .limit(1)
-      .single();
-
-    let accountAssignedMsg = "";
-    if (invItem) {
-      await supabaseAdmin.from("inventory").update({ is_used: true, assigned_order_id: id }).eq("id", invItem.id);
-      accountAssignedMsg = `<p style="color: #1DB954; font-weight: bold; padding: 10px; border: 1px solid #1DB954; border-radius: 5px;">🎉 Un compte ${escapeHtml(serviceName)} a été automatiquement assigné et livré au client !</p>`;
-    } else {
-      accountAssignedMsg = `<p style="color: orange; font-weight: bold;">⚠️ Aucun compte en stock pour ${escapeHtml(serviceName)}. Pensez à ajouter le compte manuellement.</p>`;
-    }
-
-    const { error: updateError } = await supabaseAdmin
-      .from("orders")
-      .update({
-        status: "active",
-        expires_at: expiresAt.toISOString()
-      })
-      .eq("order_id", id);
-
-    if (updateError) {
-      res.status(500).send("Erreur lors de la validation : " + escapeHtml(updateError.message));
-      return;
-    }
-
-    res.send(`
-      <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-        <h1 style="color: #1DB954;">✅ Commande Validée !</h1>
-        <p>La commande <strong>${safeId}</strong> est maintenant active.</p>
-        <p>Date d'expiration automatique : <strong>${expiresAt.toLocaleDateString('fr-FR')}</strong></p>
-        ${accountAssignedMsg}
-      </div>
-    `);
+    return res.json({ status: order.status, expires_at: order.expires_at });
   } catch (err) {
-    req.log.error({ err }, "Validation error");
-    res.status(500).send("Erreur serveur");
+    req.log?.error({ err }, "Validation error");
+    return res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
@@ -263,7 +198,7 @@ router.post("/cron/reminders", async (req, res): Promise<any> => {
     const twoDaysFromNow = new Date();
     twoDaysFromNow.setDate(now.getDate() + 2);
     
-    const { data: expiringOrders, error } = await supabase
+    const { data: expiringOrders, error } = await supabaseAdmin
       .from("orders")
       .select("*")
       .eq("status", "active")
@@ -326,7 +261,7 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       return;
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from("orders")
       .select("*")
       .order("created_at", { ascending: false });
@@ -361,7 +296,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
     if (!order_id || !status) return res.status(400).json({ error: "order_id et status requis." });
     if (!['pending', 'active', 'cancelled'].includes(status)) return res.status(400).json({ error: "Statut invalide." });
 
-    const { error: updateError } = await supabase
+    const { error: updateError } = await supabaseAdmin
       .from("orders")
       .update({ status: status })
       .eq("order_id", order_id);
@@ -387,7 +322,7 @@ router.get("/my-credentials", async (req, res): Promise<void> => {
       return;
     }
 
-    const { data: userOrders, error: ordersError } = await supabase
+    const { data: userOrders, error: ordersError } = await supabaseAdmin
       .from("orders")
       .select("order_id")
       .eq("assigned_email", email)
@@ -405,7 +340,7 @@ router.get("/my-credentials", async (req, res): Promise<void> => {
 
     const orderIds = userOrders.map((o) => o.order_id);
 
-    const { data: credentials, error } = await supabase
+    const { data: credentials, error } = await supabaseAdmin
       .from("inventory")
       .select("assigned_order_id, account_email, account_password, service, profile_name, profile_pin")
       .in("assigned_order_id", orderIds);
@@ -414,7 +349,20 @@ router.get("/my-credentials", async (req, res): Promise<void> => {
       res.status(500).json({ error: "Erreur serveur" });
       return;
     }
-    res.json({ credentials: credentials || [] });
+
+    const cleanCredentials = (credentials || []).map((c: any) => {
+      const isNetflix = c.service?.toLowerCase().includes("netflix");
+      return {
+        assigned_order_id: c.assigned_order_id,
+        account_email: c.account_email,
+        account_password: isNetflix ? null : c.account_password,
+        service: c.service,
+        profile_name: c.profile_name ?? null,
+        profile_pin: c.profile_pin ?? null,
+      };
+    });
+
+    res.json({ credentials: cleanCredentials });
   } catch (err) {
     req.log?.error({ err }, "Error fetching credentials");
     res.status(500).json({ error: "Erreur serveur" });
@@ -562,7 +510,7 @@ function recipientMatches(parsed: any, target: string): boolean {
 
 function isAuthenticNetflix(parsed: any): boolean {
   const authResults = (parsed.headers?.get?.('authentication-results') || '').toString().toLowerCase();
-  if (!authResults) return true;
+  if (!authResults) return false;
   return /dkim=pass/.test(authResults) && /netflix\.com/.test(authResults);
 }
 
@@ -769,28 +717,48 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
-    if (Array.isArray(req.body)) {
-      const rows = req.body.map(item => ({
-        service: item.service,
-        account_email: item.account_email,
-        account_password: item.account_password,
-        profile_name: item.profile_name,
-        profile_pin: item.profile_pin
-      }));
-      const { error } = await supabaseAdmin.from("inventory").insert(rows);
-      if (error) throw error;
-      return res.status(201).json({ success: true });
-    } else {
-      const { service, account_email, account_password, profile_name, profile_pin } = req.body;
-      if (!service || !account_email || !account_password) return res.status(400).json({ error: "Données manquantes." });
+    const VALID_SERVICES = new Set(["netflix", "spotify", "crunchyroll"]);
+    const MAX_BATCH = 100;
 
-      const { error } = await supabaseAdmin.from("inventory").insert({ service, account_email, account_password, profile_name, profile_pin });
-      if (error) throw error;
-      res.status(201).json({ success: true });
+    const validateEntry = (e: any): string | null => {
+      if (!e || typeof e !== "object") return "Entrée invalide.";
+      const svc = String(e.service || "").toLowerCase();
+      if (!VALID_SERVICES.has(svc)) return `Service inconnu: ${e.service}`;
+      if (!e.account_email || typeof e.account_email !== "string") return "Email manquant.";
+      if (svc !== "netflix" && !e.account_password) return "Mot de passe manquant pour ce service.";
+      return null;
+    };
+
+    let rows: any[] = [];
+    if (Array.isArray(req.body)) {
+      if (req.body.length === 0) return res.status(400).json({ error: "Lot vide." });
+      if (req.body.length > MAX_BATCH) return res.status(400).json({ error: `Maximum ${MAX_BATCH} comptes par lot.` });
+      for (const e of req.body) {
+        const err = validateEntry(e);
+        if (err) return res.status(400).json({ error: err });
+      }
+      rows = req.body;
+    } else {
+      const err = validateEntry(req.body);
+      if (err) return res.status(400).json({ error: err });
+      rows = [req.body];
     }
+
+    const cleanRows = rows.map(r => ({
+      service: String(r.service).toLowerCase(),
+      account_email: r.account_email,
+      account_password: r.account_password ?? null,
+      profile_name: r.profile_name ?? null,
+      profile_pin: r.profile_pin ?? null,
+      is_used: false,
+    }));
+
+    const { error } = await supabaseAdmin.from("inventory").insert(cleanRows);
+    if (error) throw error;
+    return res.status(201).json({ success: true, added: cleanRows.length });
   } catch (err: any) {
     console.error("[admin/inventory POST] Error:", err?.message || err?.code || err);
-    res.status(500).json({ error: "Erreur serveur", details: err?.message || String(err) });
+    return res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
@@ -839,10 +807,17 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
 
 router.get("/health/mailbox", async (req, res): Promise<any> => {
   try {
-    const health = await checkMailboxHealth();
-    res.json(health);
+    const healthToken = process.env.HEALTH_TOKEN;
+    const authHeader = req.get("x-health-token") || req.get("authorization") || "";
+    const email = await getAuthedEmail(req);
+
+    if ((!healthToken || req.get("x-health-token") !== healthToken) && !isAdmin(email)) {
+      return res.status(404).end();
+    }
+    await checkMailboxHealth();
+    return res.json({ ok: true, status: "healthy" });
   } catch (err: any) {
-    res.status(500).json({ status: "error", error: err?.message || String(err) });
+    return res.status(500).json({ status: "error" });
   }
 });
 

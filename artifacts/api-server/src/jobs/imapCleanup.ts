@@ -157,7 +157,10 @@ export async function checkMailboxHealth(): Promise<{ status: string; totalMessa
 }
 
 export function scheduleImapCleanupInterval(): void {
-  // Exécute un cycle de nettoyage toutes les heures via setInterval in-process
+  if (process.env.USE_EXTERNAL_CRON === "true") {
+    console.log('[cleanup] Cron externe actif (USE_EXTERNAL_CRON=true), setInterval in-process désactivé.');
+    return;
+  }
   const oneHourMs = 60 * 60 * 1000;
   setInterval(() => {
     runCleanupCycle().catch((e) => console.error('[cleanup] Erreur intervalle non gérée :', e));

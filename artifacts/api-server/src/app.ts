@@ -50,7 +50,7 @@ function buildAllowedOrigins(): Set<string> {
 }
 
 const allowedOrigins = buildAllowedOrigins();
-const corsSoftMode = process.env.CORS_SOFT_MODE !== "false";
+const corsSoftMode = process.env.CORS_SOFT_MODE === "true";
 
 const corsOptions: cors.CorsOptions = {
   origin(origin, callback) {
@@ -58,7 +58,6 @@ const corsOptions: cors.CorsOptions = {
     const normalized = normalizeOrigin(origin);
     if (
       allowedOrigins.has(normalized) ||
-      /\.(vercel\.app|netlify\.app|onrender\.com|replit\.dev|replit\.app)$/i.test(normalized) ||
       normalized.includes("localhost") ||
       normalized.includes("127.0.0.1")
     ) {
