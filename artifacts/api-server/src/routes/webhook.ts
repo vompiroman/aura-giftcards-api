@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 import { supabaseAdmin as supabase } from "../lib/supabase";
 import { notifyAdmin } from "../lib/notifyAdmin";
+import { expiresAtFromItems } from "../lib/payments";
 
 const router = Router();
 
@@ -24,30 +25,6 @@ function validSecret(received: unknown): boolean {
   return crypto.timingSafeEqual(a, b);
 }
 
-function durationFromItems(items: any[]): number {
-  let max = 1;
-  for (const it of items || []) {
-    const text = String(it?.name || "").toLowerCase();
-    if (text.includes("1 an") || text.includes("1 year") || text.includes("12 mois") || text.includes("سنة")) {
-      max = Math.max(max, 12);
-    } else if (text.includes("6 mois") || text.includes("6 months")) {
-      max = Math.max(max, 6);
-    } else if (text.includes("3 mois") || text.includes("3 months")) {
-      max = Math.max(max, 3);
-    } else if (text.includes("2 mois") || text.includes("2 months") || text.includes("شهران")) {
-      max = Math.max(max, 2);
-    } else {
-      const m = /(\d+)\s*(mois|month|ans?|years?)/i.exec(text);
-      if (m) {
-        let val = parseInt(m[1], 10);
-        if (m[2].startsWith("an") || m[2].startsWith("year")) val *= 12;
-        max = Math.max(max, val);
-      }
-    }
-  }
-  return max;
-}
-
 router.post("/webhook", webhookLimiter, async (req, res) => {
   try {
     if (!validSecret(req.headers["x-webhook-secret"])) {
@@ -63,9 +40,9 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
     const isPaid = ["completed", "paid", "success", "1"].includes(rawStatus);
     const isFailed = ["failed", "cancelled", "canceled", "0"].includes(rawStatus);
 
-    let query = supabase.from("orders").select("order_id, status, items");
+    let query = supabase.from("orders").select("order_id, status, items, payment_status");
     if (invoiceId) {
-      query = query.eq("invoice_id", invoiceId);
+      query = query.eq("slickpay_invoice_id", invoiceId);
     } else {
       query = query.eq("order_id", orderIdParam);
     }
@@ -84,17 +61,22 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
     if (isFailed) {
       await supabase
         .from("orders")
-        .update({ status: "cancelled" })
+        .update({ status: "cancelled", payment_status: "failed" })
         .eq("order_id", order.order_id)
         .eq("status", "pending");
       return res.status(200).json({ received: true });
     }
 
     if (isPaid) {
-      const months = durationFromItems(order.items);
+      await supabase
+        .from("orders")
+        .update({ payment_status: "paid" })
+        .eq("order_id", order.order_id)
+        .eq("status", "pending");
+
       const { error: rpcErr } = await supabase.rpc("assign_inventory_for_order", {
         p_order_id: order.order_id,
-        p_duration_months: months,
+        p_expires_at: expiresAtFromItems(order.items),
       });
 
       if (rpcErr) {

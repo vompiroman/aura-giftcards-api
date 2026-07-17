@@ -116,8 +116,16 @@ router.get("/my-orders", async (req, res): Promise<any> => {
 
     const enrichedOrders = orders.map((o: any) => {
       const acc = accountByOrderId.get(o.order_id) || accountByOrderId.get(o.id);
+      const hasNetflix = (Array.isArray(o.items) ? o.items : []).some((item: any) =>
+        String(item?.name || "").toLowerCase().includes("netflix")
+      );
       return {
         ...o,
+        waiting_for_stock:
+          o.status === "pending" &&
+          o.payment_status === "paid" &&
+          hasNetflix &&
+          !acc,
         account:
           o.status === "active" && acc
             ? {
