@@ -54,7 +54,7 @@ export async function requireAdmin(
       return;
     }
 
-    if (!isAdmin(email, data.user.raw_app_meta_data)) {
+    if (!isAdmin(email, data.user.app_metadata)) {
       res.status(404).json({ error: "Not found." });
       return;
     }
