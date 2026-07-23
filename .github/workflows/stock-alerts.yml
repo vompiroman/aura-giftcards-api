@@ -1,0 +1,28 @@
+name: Stock alerts
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    env:
+      API_ORIGIN: ${{ secrets.PRODUCTION_API_ORIGIN }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+    steps:
+      - name: Check low stock
+        shell: bash
+        run: |
+          if [ -z "$API_ORIGIN" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::warning::Configure PRODUCTION_API_ORIGIN and CRON_SECRET to enable stock alerts."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "x-cron-secret: ${CRON_SECRET}" \
+            "${API_ORIGIN%/}/api/cron/stock-alerts"

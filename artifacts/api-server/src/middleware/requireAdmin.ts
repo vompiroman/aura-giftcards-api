@@ -1,26 +1,17 @@
 import { Request, Response, NextFunction } from "express";
 import { supabaseAuth as supabase } from "../lib/supabase";
 
-const DEFAULT_ADMIN_EMAILS = [
-  "nassym.yak@gmail.com",
-  "admin@aura-stream.com",
-];
-
 export function getAdminEmails(): Set<string> {
   const list = [
-    ...DEFAULT_ADMIN_EMAILS,
     ...(process.env.ADMIN_EMAILS || "").split(","),
-    process.env.ADMIN_EMAIL || "",
+    process.env.ADMIN_EMAIL || ""
   ]
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
   return new Set(list);
 }
 
-export function isAdmin(
-  email?: string | null,
-  appMetadata?: Record<string, unknown> | null,
-): boolean {
+export function isAdmin(email?: string | null, appMetadata?: Record<string, unknown>): boolean {
   if (appMetadata?.role === "admin") return true;
   if (!email) return false;
   return getAdminEmails().has(email.toLowerCase().trim());
@@ -50,7 +41,7 @@ export async function requireAdmin(
     const { data, error } = await supabase.auth.getUser(token);
     const email = data?.user?.email?.toLowerCase();
     if (error || !email) {
-      res.status(401).json({ error: "Token invalide ou expiré." });
+      res.status(401).json({ error: "Token invalide ou expirÃƒÂ©." });
       return;
     }
 
