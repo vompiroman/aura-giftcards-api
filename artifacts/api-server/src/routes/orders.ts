@@ -132,9 +132,14 @@ router.get("/my-orders", async (req, res): Promise<any> => {
 
     const enrichedOrders = orders.map((o: any) => {
       const acc = accountByOrderId.get(o.order_id) || accountByOrderId.get(o.id);
+      const hasNetflix = publicOrderItems(o.items).some((item: any) =>
+        String(item?.name || item?.service || "").toLowerCase().includes("netflix")
+      );
       return {
         ...o,
         items: publicOrderItems(o.items),
+        waiting_for_stock:
+          o.payment_status === "paid" && o.status === "pending" && hasNetflix && !acc,
         account:
           o.status === "active" && acc
             ? {

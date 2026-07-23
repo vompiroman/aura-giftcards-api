@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 import { supabaseAuth, supabaseAdmin as supabase } from "../lib/supabase";
 import { PRICES } from "../config/prices";
+import { expiresAtFromItems, slickPayPaymentState } from "../lib/payments";
 import { notifyAdmin } from "../lib/notifyAdmin";
 
 const router = Router();
@@ -17,6 +18,20 @@ const invoiceLimiter = rateLimit({
   validate: { xForwardedForHeader: false, default: false },
   keyGenerator: (req: Request) => req.ip || "unknown",
   message: { error: "Trop de tentatives de paiement, rÃƒÂ©essayez dans une minute." },
+});
+
+const verifyPaymentLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false, default: false },
+  keyGenerator: (req: Request) => {
+    const h = req.headers.authorization || "";
+    const token = h.startsWith("Bearer ") ? h.slice(7) : "";
+    return token || "unknown";
+  },
+  message: { error: "Trop de vérifications de paiement, réessayez dans une minute." },
 });
 
 async function getAuthedEmail(req: Request): Promise<string | null> {
@@ -271,6 +286,149 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
     });
   } catch (err) {
     req.log?.error({ errorName: (err as Error)?.name }, "Invoice creation failed");
+    res.status(500).json({ error: "Erreur interne du serveur." });
+  }
+});
+
+router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: ExpressResponse): Promise<void> => {
+  try {
+    const email = await getAuthedEmail(req);
+    if (!email) {
+      res.status(401).json({ error: "Token invalide ou expiré." });
+      return;
+    }
+
+    const orderId = String(req.body?.order_id || "");
+    if (!/^ORD-[A-Za-z0-9-]{6,40}$/.test(orderId)) {
+      res.status(400).json({ error: "Identifiant de commande invalide." });
+      return;
+    }
+
+    const { data: order, error: orderError } = await supabase
+      .from("orders")
+      .select("order_id, assigned_email, amount, status, payment_status, slickpay_invoice_id, items, expires_at")
+      .eq("order_id", orderId)
+      .single();
+
+    if (orderError || !order) {
+      res.status(404).json({ error: "Commande introuvable." });
+      return;
+    }
+    if (order.assigned_email?.trim().toLowerCase() !== email) {
+      res.status(403).json({ error: "Accès refusé à cette commande." });
+      return;
+    }
+    if (order.status === "active") {
+      res.json({ verified: true, payment_status: "paid", order_status: "active", expires_at: order.expires_at });
+      return;
+    }
+    if (!order.slickpay_invoice_id) {
+      res.status(409).json({
+        verified: false,
+        payment_status: order.payment_status || "unpaid",
+        order_status: order.status,
+        error: "Cette ancienne facture ne possède pas d'identifiant de vérification.",
+      });
+      return;
+    }
+
+    const apiKey = process.env.SLICKPAY_PUBLIC_KEY || process.env.SLICKPAY_API_KEY || "";
+    if (!apiKey) {
+      res.status(500).json({ error: "Configuration de paiement incomplète." });
+      return;
+    }
+
+    const spRes = await fetch(`${SLICKPAY_URL}/${encodeURIComponent(order.slickpay_invoice_id)}`, {
+      method: "GET",
+      headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!spRes.ok) {
+      const detail = await spRes.text().catch(() => "");
+      req.log?.error({ slickpayStatus: spRes.status, detail, orderId }, "Payment verification failed");
+      res.status(502).json({ error: "La vérification du paiement est momentanément indisponible." });
+      return;
+    }
+
+    const spData: any = await spRes.json();
+    const paymentState = slickPayPaymentState(spData);
+    const providerAmount = Number(spData?.data?.amount ?? spData?.amount);
+
+    if (Number.isFinite(providerAmount) && providerAmount !== Number(order.amount)) {
+      req.log?.error({ orderId, expected: order.amount, received: providerAmount }, "SlickPay amount mismatch");
+      await notifyAdmin(`Montant SlickPay incohérent pour la commande ${orderId}.`, {
+        level: "critical",
+        orderId,
+        dedupeKey: `amount-${orderId}`,
+      });
+      res.status(409).json({ error: "Le montant vérifié ne correspond pas à la commande." });
+      return;
+    }
+
+    if (paymentState !== "paid") {
+      if (paymentState === "failed") {
+        await supabase
+          .from("orders")
+          .update({ payment_status: "failed", status: "cancelled" })
+          .eq("order_id", orderId)
+          .eq("status", "pending");
+      }
+      res.json({
+        verified: true,
+        payment_status: paymentState,
+        order_status: paymentState === "failed" ? "cancelled" : order.status,
+      });
+      return;
+    }
+
+    const { error: paidUpdateError } = await supabase
+      .from("orders")
+      .update({ payment_status: "paid" })
+      .eq("order_id", orderId)
+      .eq("status", "pending");
+
+    if (paidUpdateError) {
+      req.log?.error({ paidUpdateError, orderId }, "Could not persist verified payment");
+      res.status(500).json({ error: "Paiement confirmé mais enregistrement impossible. Le support a été alerté." });
+      return;
+    }
+
+    const expiresAt = expiresAtFromItems(order.items);
+    const { error: assignmentError } = await supabase.rpc("assign_inventory_for_order", {
+      p_order_id: orderId,
+      p_expires_at: expiresAt,
+    });
+
+    if (assignmentError) {
+      const waitingForStock = assignmentError.message?.includes("OUT_OF_STOCK");
+      await notifyAdmin(
+        waitingForStock
+          ? `Paiement confirmé mais stock épuisé pour la commande ${orderId}.`
+          : `Paiement confirmé mais attribution impossible pour ${orderId}: ${assignmentError.message}`,
+        {
+          level: waitingForStock ? "critical" : "warning",
+          orderId,
+          dedupeKey: `assignment-${orderId}`,
+        },
+      );
+
+      if (waitingForStock) {
+        res.json({ verified: true, payment_status: "paid", order_status: "pending", waiting_for_stock: true });
+        return;
+      }
+
+      res.status(502).json({
+        verified: true,
+        payment_status: "paid",
+        order_status: "pending",
+        error: "Paiement confirmé. L'attribution sera finalisée par le support.",
+      });
+      return;
+    }
+
+    res.json({ verified: true, payment_status: "paid", order_status: "active", expires_at: expiresAt });
+  } catch (err) {
+    req.log?.error({ err }, "Payment verification failed unexpectedly");
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
 });

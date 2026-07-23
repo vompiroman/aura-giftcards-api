@@ -11,7 +11,8 @@ export function getAdminEmails(): Set<string> {
   return new Set(list);
 }
 
-export function isAdmin(email?: string | null): boolean {
+export function isAdmin(email?: string | null, appMetadata?: Record<string, unknown>): boolean {
+  if (appMetadata?.role === "admin") return true;
   if (!email) return false;
   return getAdminEmails().has(email.toLowerCase().trim());
 }
@@ -44,7 +45,7 @@ export async function requireAdmin(
       return;
     }
 
-    if (!isAdmin(email)) {
+    if (!isAdmin(email, data.user.app_metadata)) {
       res.status(404).json({ error: "Not found." });
       return;
     }
