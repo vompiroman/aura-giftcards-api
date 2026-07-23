@@ -55,3 +55,9 @@ Les tests E2E s'exécutent contre une **base Supabase de staging dédiée** (jam
 ```bash
 npm run test:all
 ```
+
+## Suivi Meta et alertes de stock
+
+Le webhook de paiement peut envoyer l'événement `Purchase` à la Conversion API Meta. Configure `META_CAPI_ACCESS_TOKEN` et, si nécessaire, `META_PIXEL_ID` et `META_GRAPH_API_VERSION`. L'adresse email est normalisée puis hachée en SHA-256 avant l'envoi ; aucun identifiant de compte streaming n'est transmis.
+
+Le workflow `stock-alerts.yml` appelle chaque jour la route protégée `/api/cron/stock-alerts`. Configure les secrets GitHub `PRODUCTION_API_ORIGIN` et `CRON_SECRET`, ainsi que `DISCORD_ADMIN_WEBHOOK_URL`, `LOW_STOCK_THRESHOLD` et `LOW_STOCK_SERVICES` sur le serveur.
