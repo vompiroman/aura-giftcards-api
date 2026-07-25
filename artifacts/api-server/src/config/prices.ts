@@ -43,7 +43,7 @@ export function computeCart(rawItems: unknown): PricingResult {
 
   for (const raw of rawItems) {
     const name = typeof raw?.name === "string" ? raw.name : null;
-    const quantity = Number(raw?.quantity) || 1;
+    const quantity = raw?.quantity === undefined ? 1 : Number(raw.quantity);
     const unit = name ? PRICES[name] : undefined;
 
     if (

@@ -25,7 +25,6 @@ const createOrderLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: { xForwardedForHeader: false, default: false },
-  keyGenerator: (req: Request) => req.ip || "unknown",
   message: { error: "Trop de commandes crÃƒÂ©ÃƒÂ©es, rÃƒÂ©essayez dans une minute." },
 });
 
@@ -34,7 +33,6 @@ const credentialLimiter = rateLimit({
   max: 6,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => req.ip || "unknown",
   message: { error: "Trop de modifications. RÃƒÂ©essayez plus tard." },
 });
 

@@ -107,7 +107,6 @@ const globalApiLimiter = rateLimit({
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.ip || "unknown",
   message: { error: "Trop de requÃƒÂªtes. RÃƒÂ©essayez dans quelques minutes." },
 });
 

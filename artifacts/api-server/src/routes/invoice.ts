@@ -16,7 +16,6 @@ const invoiceLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: { xForwardedForHeader: false, default: false },
-  keyGenerator: (req: Request) => req.ip || "unknown",
   message: { error: "Trop de tentatives de paiement, rÃƒÂ©essayez dans une minute." },
 });
 
