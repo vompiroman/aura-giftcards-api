@@ -1,124 +1,138 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-// ─── Références de mock partagées (hoistées avant les imports) ────────────
-// vi.hoisted garantit que ces fns existent au moment où vi.mock est remonté
-// en haut du module, donc avant que `app` (et sa chaîne d'imports) ne charge.
 const { notifyAdminMock, rpcMock, fromMock } = vi.hoisted(() => ({
   notifyAdminMock: vi.fn(),
   rpcMock: vi.fn(),
   fromMock: vi.fn(),
 }));
 
-// Mock de notifyAdmin : on n'envoie jamais de vrai message Discord en test,
-// on capture seulement l'appel et ses arguments.
-vi.mock("../../src/lib/notifyAdmin", () => ({
-  notifyAdmin: notifyAdminMock,
-}));
+vi.mock("../../src/lib/notifyAdmin", () => ({ notifyAdmin: notifyAdminMock }));
 
-// Mock du client Supabase utilisé par webhook.ts (`import { supabase } from "../lib/supabase"`).
 vi.mock("../../src/lib/supabase", () => ({
-  supabase: {
-    rpc: rpcMock,
-    from: fromMock,
-  },
+  supabase: { rpc: rpcMock, from: fromMock },
+  supabaseAdmin: { rpc: rpcMock, from: fromMock },
+  supabaseAuth: { auth: { getUser: vi.fn() } },
 }));
 
-// L'app Express est importée APRÈS les mocks : sa chaîne d'imports les reçoit.
 import app from "../../src/app";
 
-// ─── Helpers de payload / réponses Supabase ───────────────────────────────
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "test-webhook-secret";
+const WEBHOOK_SECRET = "test-webhook-secret";
 
 function webhookPayload(orderId: string) {
   return {
+    invoice_id: `INV-${orderId}`,
     completed: 1,
     status: "completed",
     order_id: orderId,
-    transferId: "TEST-TX-" + orderId,
   };
 }
 
-// Construit un builder Supabase minimal et chaînable pour les lectures de commande.
-// Chaque méthode renvoie `this` sauf la terminale (maybeSingle) qui résout la row.
 function orderQueryStub(orderRow: Record<string, unknown> | null) {
   const builder: Record<string, any> = {};
-  for (const m of ["select", "eq", "update", "insert", "is"]) {
-    builder[m] = vi.fn(() => builder);
+  for (const method of ["select", "eq", "update", "insert", "is", "neq"]) {
+    builder[method] = vi.fn(() => builder);
   }
-  builder.maybeSingle = vi.fn(async () => ({ data: orderRow, error: null }));
   builder.single = vi.fn(async () => ({ data: orderRow, error: null }));
-  builder.then = undefined;
+  builder.then = (resolve: any, reject: any) =>
+    Promise.resolve({ data: [{ order_id: orderRow?.order_id }], error: null }).then(resolve, reject);
   return builder;
 }
 
-describe("Intégration — webhook /webhook (mock notifyAdmin + Supabase)", () => {
+describe("POST /api/webhook", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    fromMock.mockReturnValue(orderQueryStub({ order_id: "ORD-x", status: "pending", items: [{ name: "Netflix 1 mois", quantity: 1 }] }));
+    process.env.WEBHOOK_SECRET = WEBHOOK_SECRET;
+    process.env.SLICKPAY_API_KEY = "test-api-key";
+    delete process.env.META_CAPI_ACCESS_TOKEN;
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ completed: 1, data: { payment_status: "paid", amount: 800 } }),
+    })));
+    fromMock.mockReturnValue(orderQueryStub({
+      order_id: "ORD-x",
+      status: "pending",
+      payment_status: "unpaid",
+      amount: 800,
+      assigned_email: "client@example.com",
+      slickpay_invoice_id: "INV-ORD-x",
+      items: [{ name: "Netflix 1 mois", quantity: 1 }],
+    }));
   });
 
-  it("rejette un secret invalide sans jamais alerter l'admin", async () => {
+  it("rejette un secret invalide sans effet de bord", async () => {
     const res = await request(app)
-      .post("/webhook")
+      .post("/api/webhook")
       .set("x-webhook-secret", "mauvais-secret")
       .send(webhookPayload("ORD-bad"));
 
-    expect([401, 403]).toContain(res.status);
+    expect(res.status).toBe(401);
     expect(notifyAdminMock).not.toHaveBeenCalled();
     expect(rpcMock).not.toHaveBeenCalled();
   });
 
-  it("stock épuisé : répond 200 + needs_manual et ALERTE l'admin, sans activer", async () => {
-    const orderId = "ORD-stockout-1";
-
-    // La RPC lève une exception en base quand le stock est épuisé
-    rpcMock.mockResolvedValue({ data: null, error: { message: "OUT_OF_STOCK: Plus de stock Netflix disponible." } });
+  it("alerte l'admin sans activer quand le stock est épuisé", async () => {
+    rpcMock.mockResolvedValue({ data: null, error: { message: "OUT_OF_STOCK: Netflix" } });
 
     const res = await request(app)
-      .post("/webhook")
+      .post("/api/webhook")
       .set("x-webhook-secret", WEBHOOK_SECRET)
-      .send(webhookPayload(orderId));
+      .send(webhookPayload("ORD-x"));
 
     expect(res.status).toBe(200);
     expect(res.body.needs_manual).toBe(true);
-    expect(notifyAdminMock).toHaveBeenCalledTimes(1);
     expect(notifyAdminMock).toHaveBeenCalledWith(
-      expect.stringContaining("Stock épuisé"),
-      "critical"
+      expect.stringContaining("stock"),
+      expect.objectContaining({ level: "critical", orderId: "ORD-x" }),
     );
   });
 
-  it("stock disponible : active la commande sans alerter l'admin", async () => {
-    const orderId = "ORD-ok-1";
-
-    // La RPC réussit l'assignation
+  it("active après revalidation SlickPay quand le stock est disponible", async () => {
     rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
 
     const res = await request(app)
-      .post("/webhook")
+      .post("/api/webhook")
       .set("x-webhook-secret", WEBHOOK_SECRET)
-      .send(webhookPayload(orderId));
+      .send(webhookPayload("ORD-x"));
 
     expect(res.status).toBe(200);
-    expect(notifyAdminMock).not.toHaveBeenCalled();
+    expect(res.body.activated).toBe(true);
     expect(rpcMock).toHaveBeenCalledTimes(1);
   });
 
-  it("idempotence : un webhook déjà traité n'alerte pas et ne réassigne pas", async () => {
-    const orderId = "ORD-dup-1";
-
-    fromMock.mockReturnValue(
-      orderQueryStub({ order_id: orderId, status: "completed" })
-    );
+  it("ne réassigne pas une commande déjà terminée", async () => {
+    fromMock.mockReturnValue(orderQueryStub({
+      order_id: "ORD-dup",
+      status: "completed",
+      payment_status: "paid",
+      amount: 800,
+      slickpay_invoice_id: "INV-ORD-dup",
+      items: [],
+    }));
 
     const res = await request(app)
-      .post("/webhook")
+      .post("/api/webhook")
       .set("x-webhook-secret", WEBHOOK_SECRET)
-      .send(webhookPayload(orderId));
+      .send(webhookPayload("ORD-dup"));
 
     expect(res.status).toBe(200);
-    expect(notifyAdminMock).not.toHaveBeenCalled();
+    expect(rpcMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuse d'activer si SlickPay ne confirme pas le paiement", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ completed: 0, data: { payment_status: "unpaid", amount: 800 } }),
+    } as Response);
+
+    const res = await request(app)
+      .post("/api/webhook")
+      .set("x-webhook-secret", WEBHOOK_SECRET)
+      .send(webhookPayload("ORD-x"));
+
+    expect(res.status).toBe(200);
+    expect(res.body.verified).toBe(false);
     expect(rpcMock).not.toHaveBeenCalled();
   });
 });

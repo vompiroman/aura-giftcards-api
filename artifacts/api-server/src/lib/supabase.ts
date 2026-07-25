@@ -2,36 +2,39 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env["SUPABASE_URL"];
 const supabaseKey = process.env["SUPABASE_SERVICE_ROLE_KEY"] || process.env["SUPABASE_KEY"];
+const supabaseAuthKey = process.env["SUPABASE_ANON_KEY"] || supabaseKey;
 
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error("SUPABASE_URL and SUPABASE_KEY environment variables are required.");
+if (!supabaseUrl || !supabaseKey || !supabaseAuthKey) {
+  throw new Error("SUPABASE_URL and a server Supabase key are required.");
 }
 
-// Vérification de sécurité et de diagnostic au démarrage (Boot Check)
-try {
-  const parts = supabaseKey.split(".");
+// Refuse an anon key for privileged database access. Do not swallow this check.
+function decodeRole(key: string): string | null {
+  try {
+    const parts = key.split(".");
   if (parts.length === 3) {
     const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
-    if (payload.role === "anon") {
-      console.warn("⚠️ [BOOT AUDIT] SUPABASE_KEY contient la clé 'anon'. Les requêtes serveur sont soumises à RLS ! Si les commandes sont invisibles, remplacez par la clé 'service_role' sur Render.");
-    } else if (payload.role === "service_role") {
-      console.log("✅ [BOOT AUDIT] SUPABASE_KEY est bien la clé 'service_role' (BYPASSRLS actif, mode serveur sécurisé).");
-    }
+      return typeof payload.role === "string" ? payload.role : null;
   }
-} catch {
-  // Ignorer si la clé n'est pas un JWT standard
+  } catch {}
+  return null;
 }
 
-// Client AUTH : utilisé UNIQUEMENT pour les appels d'authentification (.auth.signUp, .auth.signIn, .auth.getUser)
-export const supabaseAuth = createClient(supabaseUrl, supabaseKey, {
+const databaseRole = decodeRole(supabaseKey);
+if (databaseRole === "anon") {
+  throw new Error("SUPABASE_SERVICE_ROLE_KEY must be a service_role key, never an anon key.");
+}
+
+// Client AUTH : utilisÃƒÂ© UNIQUEMENT pour les appels d'authentification (.auth.signUp, .auth.signIn, .auth.getUser)
+export const supabaseAuth = createClient(supabaseUrl, supabaseAuthKey, {
   auth: {
     autoRefreshToken: false,
     persistSession: false,
   },
 });
 
-// Client ADMIN / DB : utilisé pour toutes les requêtes base de données (.from, .rpc)
-// En ne l'utilisant JAMAIS pour .auth.*, son header Authorization n'est JAMAIS pollué par le token d'un utilisateur !
+// Client ADMIN / DB : utilisÃƒÂ© pour toutes les requÃƒÂªtes base de donnÃƒÂ©es (.from, .rpc)
+// En ne l'utilisant JAMAIS pour .auth.*, son header Authorization n'est JAMAIS polluÃƒÂ© par le token d'un utilisateur !
 export const supabaseAdmin = createClient(supabaseUrl, supabaseKey, {
   auth: {
     autoRefreshToken: false,
@@ -39,5 +42,5 @@ export const supabaseAdmin = createClient(supabaseUrl, supabaseKey, {
   },
 });
 
-// Alias par défaut pointant sur supabaseAdmin pour que tous les appels .from() existants contournent RLS
+// Alias par dÃƒÂ©faut pointant sur supabaseAdmin pour que tous les appels .from() existants contournent RLS
 export const supabase = supabaseAdmin;

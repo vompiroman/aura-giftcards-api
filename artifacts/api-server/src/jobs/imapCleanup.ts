@@ -13,10 +13,14 @@ export interface CleanupConfig {
 }
 
 function loadConfig(): CleanupConfig {
-  const host = process.env.IMAP_ADMIN_HOST || 'imap.hostinger.com';
+  const host = process.env.IMAP_ADMIN_HOST || '';
   const port = Number(process.env.IMAP_ADMIN_PORT || 993);
-  const user = process.env.IMAP_ADMIN_USER || 'admin@aura-stream.com';
+  const user = process.env.IMAP_ADMIN_USER || '';
   const pass = process.env.IMAP_ADMIN_PASS || process.env.DEFAULT_IMAP_PASSWORD || '';
+
+  if (!host || !user || !pass || port !== 993) {
+    throw new Error('IMAP_ADMIN_HOST, IMAP_ADMIN_USER and IMAP_ADMIN_PASS are required; port must be 993.');
+  }
 
   return {
     host,
@@ -36,7 +40,7 @@ async function ensureFolder(client: ImapFlow, folder: string): Promise<void> {
   const exists = list.some((box) => box.path === folder);
   if (!exists) {
     await client.mailboxCreate(folder);
-    console.log(`[cleanup] Dossier "${folder}" créé.`);
+    console.log(`[cleanup] Dossier "${folder}" crÃƒÂ©ÃƒÂ©.`);
   }
 }
 
@@ -65,7 +69,7 @@ async function archiveOldInbox(client: ImapFlow, cfg: CleanupConfig): Promise<nu
 
     await client.messageMove(uids, cfg.processedFolder, { uid: true });
     console.log(
-      `[cleanup] ${uids.length} mail(s) archivé(s) vers "${cfg.processedFolder}" (cutoff ${effectiveHours} h, INBOX=${total}).`
+      `[cleanup] ${uids.length} mail(s) archivÃƒÂ©(s) vers "${cfg.processedFolder}" (cutoff ${effectiveHours} h, INBOX=${total}).`
     );
     return uids.length;
   } finally {
@@ -82,7 +86,7 @@ async function purgeOldProcessed(client: ImapFlow, cfg: CleanupConfig): Promise<
 
     await client.messageDelete(uids, { uid: true });
     console.log(
-      `[cleanup] ${uids.length} mail(s) purgé(s) de "${cfg.processedFolder}" (rétention ${cfg.purgeAfterHours} h).`
+      `[cleanup] ${uids.length} mail(s) purgÃƒÂ©(s) de "${cfg.processedFolder}" (rÃƒÂ©tention ${cfg.purgeAfterHours} h).`
     );
     return uids.length;
   } finally {
@@ -94,7 +98,7 @@ let isRunning = false;
 
 export async function runCleanupCycle(): Promise<{ archived: number; purged: number }> {
   if (isRunning) {
-    console.warn('[cleanup] Cycle déjà en cours, exécution sautée.');
+    console.warn('[cleanup] Cycle dÃƒÂ©jÃƒÂ  en cours, exÃƒÂ©cution sautÃƒÂ©e.');
     return { archived: 0, purged: 0 };
   }
   isRunning = true;
@@ -104,7 +108,7 @@ export async function runCleanupCycle(): Promise<{ archived: number; purged: num
     host: cfg.host,
     port: cfg.port,
     secure: true,
-    tls: { rejectUnauthorized: false },
+    tls: { rejectUnauthorized: true },
     auth: { user: cfg.user, pass: cfg.pass },
     logger: false,
     clientInfo: { name: 'AuraStream-Cleanup', version: '1.0.0' },
@@ -117,10 +121,10 @@ export async function runCleanupCycle(): Promise<{ archived: number; purged: num
     const archived = await archiveOldInbox(client, cfg);
     const purged = await purgeOldProcessed(client, cfg);
 
-    console.log(`[cleanup] Cycle terminé : ${archived} archivé(s), ${purged} purgé(s).`);
+    console.log(`[cleanup] Cycle terminÃƒÂ© : ${archived} archivÃƒÂ©(s), ${purged} purgÃƒÂ©(s).`);
     return { archived, purged };
   } catch (err: any) {
-    console.error('[cleanup] Échec du cycle :', err?.responseText || err?.message || err);
+    console.error('[cleanup] Ãƒâ€°chec du cycle IMAP.', { code: err?.code });
     throw err;
   } finally {
     try {
@@ -136,7 +140,7 @@ export async function checkMailboxHealth(): Promise<{ status: string; totalMessa
     host: cfg.host,
     port: cfg.port,
     secure: true,
-    tls: { rejectUnauthorized: false },
+    tls: { rejectUnauthorized: true },
     auth: { user: cfg.user, pass: cfg.pass },
     logger: false,
   });
@@ -158,12 +162,12 @@ export async function checkMailboxHealth(): Promise<{ status: string; totalMessa
 
 export function scheduleImapCleanupInterval(): void {
   if (process.env.USE_EXTERNAL_CRON === "true") {
-    console.log('[cleanup] Cron externe actif (USE_EXTERNAL_CRON=true), setInterval in-process désactivé.');
+    console.log('[cleanup] Cron externe actif (USE_EXTERNAL_CRON=true), setInterval in-process dÃƒÂ©sactivÃƒÂ©.');
     return;
   }
   const oneHourMs = 60 * 60 * 1000;
   setInterval(() => {
-    runCleanupCycle().catch((e) => console.error('[cleanup] Erreur intervalle non gérée :', e));
+    runCleanupCycle().catch((e) => console.error('[cleanup] Erreur intervalle non gÃƒÂ©rÃƒÂ©e :', e));
   }, oneHourMs);
-  console.log('[cleanup] Nettoyage IMAP planifié toutes les heures.');
+  console.log('[cleanup] Nettoyage IMAP planifiÃƒÂ© toutes les heures.');
 }
