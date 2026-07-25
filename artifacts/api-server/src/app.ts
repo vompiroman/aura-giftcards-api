@@ -52,6 +52,9 @@ function buildAllowedOrigins(): Set<string> {
   const configured = [
     process.env.ALLOWED_ORIGINS,
     process.env.FRONTEND_URL,
+    "https://aura-stream.com",
+    "https://www.aura-stream.com",
+    "https://aura-stream-deploy.vercel.app",
     "https://aura-stream.vercel.app",
     "https://aura-stream.netlify.app",
   ]
