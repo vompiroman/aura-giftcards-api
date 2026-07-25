@@ -1,5 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
+
+vi.mock("../../src/lib/supabase", () => ({
+  supabase: { from: vi.fn(), rpc: vi.fn() },
+  supabaseAdmin: { from: vi.fn(), rpc: vi.fn() },
+  supabaseAuth: {
+    auth: {
+      getUser: vi.fn(),
+      signInWithPassword: vi.fn(),
+      signUp: vi.fn(),
+    },
+  },
+}));
+
 import app from "../../src/app";
 
 describe("CORS production", () => {
