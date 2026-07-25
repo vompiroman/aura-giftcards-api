@@ -16,7 +16,7 @@ const invoiceLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: { xForwardedForHeader: false, default: false },
-  message: { error: "Trop de tentatives de paiement, rÃƒÂ©essayez dans une minute." },
+  message: { error: "Trop de tentatives de paiement, réessayez dans une minute." },
 });
 
 const verifyPaymentLimiter = rateLimit({
@@ -55,7 +55,7 @@ function buildSlickpayItems(
     const qty = Number(item.quantity);
 
     if (typeof unitPrice !== "number" || !Number.isFinite(qty) || qty <= 0) {
-      console.warn(`[invoice] Ligne non rÃƒÂ©solvable pour SlickPay : ${item?.name}`);
+      console.warn(`[invoice] Ligne non résolvable pour SlickPay : ${item?.name}`);
       return null;
     }
 
@@ -68,7 +68,7 @@ function buildSlickpayItems(
   return mapped;
 }
 
-// Fallback garanti-acceptÃƒÂ© : une seule ligne
+// Fallback garanti-accepté : une seule ligne
 function singleLineFallback(
   orderId: string,
   amount: number
@@ -101,6 +101,38 @@ function isAllowedPaymentUrl(value: unknown): value is string {
   }
 }
 
+function configuredSlickPayAccount(): string | null {
+  const value = String(process.env.SLICKPAY_ACCOUNT_UUID || "").trim();
+  if (!value) return null;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    ? value
+    : null;
+}
+
+function slickPayResponseSummary(data: any): Record<string, unknown> {
+  const rawUrl =
+    data?.url ??
+    data?.data?.url ??
+    data?.payment_url ??
+    data?.data?.payment_url ??
+    data?.redirect_url ??
+    data?.data?.redirect_url;
+  let paymentHost: string | null = null;
+  try {
+    paymentHost = typeof rawUrl === "string" ? new URL(rawUrl).hostname : null;
+  } catch {
+    paymentHost = null;
+  }
+  return {
+    success: data?.success,
+    keys: data && typeof data === "object" && !Array.isArray(data)
+      ? Object.keys(data).slice(0, 12)
+      : [],
+    hasId: Boolean(data?.data?.id ?? data?.id),
+    paymentHost,
+  };
+}
+
 async function releaseClaim(orderId: string, claim: string): Promise<void> {
   await supabase
     .from("orders")
@@ -113,7 +145,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
   try {
     const email = await getAuthedEmail(req);
     if (!email) {
-      res.status(401).json({ error: "Token invalide ou expirÃƒÂ©." });
+      res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
 
@@ -131,12 +163,12 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
 
     if (fetchError || !order) {
       req.log?.warn({ orderId: order_id }, "Invoice requested for unknown order");
-      res.status(404).json({ error: "Commande introuvable. Si vous venez de la crÃƒÂ©er, veuillez rÃƒÂ©essayer dans quelques secondes." });
+      res.status(404).json({ error: "Commande introuvable. Si vous venez de la créer, veuillez réessayer dans quelques secondes." });
       return;
     }
 
     if (order.assigned_email?.toLowerCase() !== email.toLowerCase()) {
-      res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ© ÃƒÂ  cette commande." });
+      res.status(403).json({ error: "Accès refusé à cette commande." });
       return;
     }
 
@@ -160,7 +192,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
     }
 
     if (order.slickpay_invoice_id) {
-      res.status(409).json({ error: "Un paiement a dÃƒÂ©jÃƒÂ  ÃƒÂ©tÃƒÂ© initialisÃƒÂ© pour cette commande." });
+      res.status(409).json({ error: "Un paiement a déjà été initialisé pour cette commande." });
       return;
     }
 
@@ -179,9 +211,17 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
 
     const apiKey = process.env.SLICKPAY_PUBLIC_KEY || process.env.SLICKPAY_API_KEY || "";
     const webhookUrl = process.env.SLICKPAY_WEBHOOK_URL || "";
+    const configuredAccountValue = String(process.env.SLICKPAY_ACCOUNT_UUID || "").trim();
+    const account = configuredSlickPayAccount();
     const returnUrl = frontendReturnUrl(order.order_id);
-    if (!apiKey || !process.env.WEBHOOK_SECRET || !returnUrl || !/^https:\/\//i.test(webhookUrl)) {
-      res.status(503).json({ error: "Le service de paiement n'est pas configurÃƒÂ©." });
+    if (
+      !apiKey ||
+      !process.env.WEBHOOK_SECRET ||
+      !returnUrl ||
+      !/^https:\/\//i.test(webhookUrl) ||
+      (configuredAccountValue && !account)
+    ) {
+      res.status(503).json({ error: "Le service de paiement n'est pas configuré." });
       return;
     }
 
@@ -204,17 +244,18 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
 
     const payload = {
       amount,
-      // SlickPay utilise cette URL aussi bien aprÃƒÂ¨s un paiement qu'aprÃƒÂ¨s une
-      // annulation. Le frontend doit vÃƒÂ©rifier le statut serveur avant d'afficher
+      // SlickPay utilise cette URL aussi bien après un paiement qu'après une
+      // annulation. Le frontend doit vérifier le statut serveur avant d'afficher
       // une confirmation.
       url: returnUrl,
+      ...(account ? { account } : {}),
       webhook_url: webhookUrl,
       webhook_signature: process.env.WEBHOOK_SECRET,
       webhook_meta_data: [{ order_id: order.order_id }],
       firstname: email.split("@")[0] || "Client",
       lastname: "Aura Stream",
       email,
-      address: "Alger, AlgÃƒÂ©rie",
+      address: "Alger, Algérie",
       phone: "0550000000",
       items: finalItems,
     };
@@ -249,13 +290,27 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
     }
 
     const spData: any = await spRes.json();
-    const invoiceId = spData?.data?.id || spData?.id;
-    const paymentUrl = spData?.url || spData?.data?.url || spData?.payment_url || spData?.redirect_url;
+    const invoiceId = spData?.data?.id ?? spData?.id;
+    const paymentUrl =
+      spData?.url ??
+      spData?.data?.url ??
+      spData?.payment_url ??
+      spData?.data?.payment_url ??
+      spData?.redirect_url ??
+      spData?.data?.redirect_url;
 
-    if (!invoiceId || !isAllowedPaymentUrl(paymentUrl)) {
+    if (
+      invoiceId === undefined ||
+      invoiceId === null ||
+      String(invoiceId).trim() === "" ||
+      !isAllowedPaymentUrl(paymentUrl)
+    ) {
       await releaseClaim(order.order_id, claim);
-      req.log?.error({ orderId: order_id }, "Invalid SlickPay invoice response");
-      res.status(502).json({ error: "RÃƒÂ©ponse invalide du prestataire de paiement." });
+      req.log?.error(
+        { orderId: order_id, provider: slickPayResponseSummary(spData) },
+        "Invalid SlickPay invoice response",
+      );
+      res.status(502).json({ error: "Réponse invalide du prestataire de paiement." });
       return;
     }
 
@@ -268,7 +323,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
 
     if (invoiceUpdateError || !saved?.length) {
       req.log?.error({ orderId: order_id }, "Could not persist SlickPay invoice id");
-      await notifyAdmin("Facture SlickPay crÃƒÂ©ÃƒÂ©e mais impossible de l'enregistrer.", {
+      await notifyAdmin("Facture SlickPay créée mais impossible de l'enregistrer.", {
         level: "critical",
         orderId: order.order_id,
         dedupeKey: `invoice-save-${order.order_id}`,

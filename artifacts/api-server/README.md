@@ -56,6 +56,13 @@ Les tests E2E s'exécutent contre une **base Supabase de staging dédiée** (jam
 npm run test:all
 ```
 
+## Configuration SlickPay
+
+La création d'une facture utilise `SLICKPAY_PUBLIC_KEY`, `SLICKPAY_WEBHOOK_URL`,
+`WEBHOOK_SECRET` et `FRONTEND_URL`. Configure aussi `SLICKPAY_ACCOUNT_UUID` avec
+l'UUID du compte bénéficiaire SlickPay. Ce dernier est indispensable lorsqu'aucun
+compte bénéficiaire par défaut n'est défini dans SlickPay.
+
 ## Suivi Meta et alertes de stock
 
 Le webhook de paiement peut envoyer l'événement `Purchase` à la Conversion API Meta. Configure `META_CAPI_ACCESS_TOKEN` et, si nécessaire, `META_PIXEL_ID` et `META_GRAPH_API_VERSION`. L'adresse email est normalisée puis hachée en SHA-256 avant l'envoi ; aucun identifiant de compte streaming n'est transmis.
