@@ -36,13 +36,36 @@ jobs:
       ITEM_NAME: "Netflix 1 mois"
       ITEM_SERVICE: "Netflix"
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - name: Check E2E configuration
+        id: e2e_config
+        shell: bash
+        run: |
+          required=(API_BASE SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY WEBHOOK_SECRET TEST_EMAIL TEST_PASSWORD)
+          missing=()
+          for name in "${required[@]}"; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::E2E skipped: configure dedicated staging secrets (${missing[*]})."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.e2e_config.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+      - if: steps.e2e_config.outputs.enabled == 'true'
+        uses: pnpm/action-setup@v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - if: steps.e2e_config.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @workspace/api-server test:e2e:ci
+      - if: steps.e2e_config.outputs.enabled == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.e2e_config.outputs.enabled == 'true'
+        run: pnpm --filter @workspace/api-server test:e2e:ci
