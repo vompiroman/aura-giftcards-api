@@ -95,6 +95,8 @@ function isAllowedPaymentUrl(value: unknown): value is string {
     const url = new URL(value);
     return url.protocol === "https:" && (
       url.hostname === "slick-pay.com" || url.hostname.endsWith(".slick-pay.com")
+      // SlickPay hands SATIM/Edahabia checkout to this exact payment host.
+      || url.hostname === "cib.satim.dz"
     );
   } catch {
     return false;
