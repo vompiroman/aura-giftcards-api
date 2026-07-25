@@ -133,6 +133,38 @@ function slickPayResponseSummary(data: any): Record<string, unknown> {
   };
 }
 
+function slickPayErrorSummary(raw: string): Record<string, unknown> {
+  let parsed: any = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // SlickPay may return a plain-text or HTML error body.
+  }
+
+  const values = [
+    parsed?.message,
+    parsed?.error,
+    parsed?.detail,
+    parsed?.errors,
+    parsed?.data?.message,
+    parsed?.data?.error,
+  ].filter((value) => value !== undefined && value !== null);
+  const message = String(values[0] ?? raw ?? "")
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/\b\d{10,}\b/g, "[number]")
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, 500);
+
+  return {
+    format: parsed ? "json" : "text",
+    keys: parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? Object.keys(parsed).slice(0, 12)
+      : [],
+    message,
+  };
+}
+
 async function releaseClaim(orderId: string, claim: string): Promise<void> {
   await supabase
     .from("orders")
@@ -282,8 +314,15 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
     }
 
     if (!spRes.ok) {
-      await spRes.text().catch(() => "");
-      req.log?.warn({ status: spRes.status, orderId: order_id }, "SlickPay invoice creation failed");
+      const providerBody = await spRes.text().catch(() => "");
+      req.log?.warn(
+        {
+          status: spRes.status,
+          orderId: order_id,
+          provider: slickPayErrorSummary(providerBody),
+        },
+        "SlickPay invoice creation failed",
+      );
       await releaseClaim(order.order_id, claim);
       res.status(502).json({ error: "Erreur du prestataire de paiement." });
       return;
