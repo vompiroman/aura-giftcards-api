@@ -6,10 +6,10 @@
 
 Le projet possède deux niveaux de tests complémentaires :
 
-| Suite           | Ce qu'elle couvre                                                                           | Réseau / base réelle | Secrets requis |
-| --------------- | ------------------------------------------------------------------------------------------- | -------------------- | -------------- |
-| **Intégration** | Handlers Express isolés (`/create-order`, `/webhook`) avec Supabase et `notifyAdmin` mockés | Non                  | Aucun          |
-| **E2E**         | Chaîne de paiement complète jusqu'à PostgreSQL (login → commande → facture → webhook)       | Oui (staging)        | Oui            |
+| Suite | Ce qu'elle couvre | Réseau / base réelle | Secrets requis |
+|---|---|---|---|
+| **Intégration** | Handlers Express isolés (`/create-order`, `/webhook`) avec Supabase et `notifyAdmin` mockés | Non | Aucun |
+| **E2E** | Chaîne de paiement complète jusqu'à PostgreSQL (login → commande → facture → webhook) | Oui (staging) | Oui |
 
 ### Lancer les tests d'intégration (rapides, sans configuration)
 
@@ -32,15 +32,15 @@ Les tests E2E s'exécutent contre une **base Supabase de staging dédiée** (jam
 
 2. Renseigne les variables dans `.env.test` :
 
-   | Variable                       | Description                                                           |
-   | ------------------------------ | --------------------------------------------------------------------- |
-   | `API_BASE`                     | URL de l'API à tester (ex. `http://localhost:3000`)                   |
-   | `SUPABASE_URL`                 | URL du projet Supabase de **staging**                                 |
-   | `SUPABASE_ANON_KEY`            | Clé anonyme (login de l'utilisateur de test)                          |
-   | `SUPABASE_SERVICE_ROLE_KEY`    | Clé `service_role` de **staging uniquement** (assertions + nettoyage) |
-   | `WEBHOOK_SECRET`               | Même valeur que `SLICKPAY_WEBHOOK_SECRET` côté serveur                |
-   | `TEST_EMAIL` / `TEST_PASSWORD` | Compte de test **non-admin**                                          |
-   | `ITEM_NAME` / `ITEM_SERVICE`   | Article et service de test (ex. `Netflix 1 mois` / `Netflix`)         |
+   | Variable | Description |
+   |---|---|
+   | `API_BASE` | URL de l'API à tester (ex. `http://localhost:3000`) |
+   | `SUPABASE_URL` | URL du projet Supabase de **staging** |
+   | `SUPABASE_ANON_KEY` | Clé anonyme (login de l'utilisateur de test) |
+   | `SUPABASE_SERVICE_ROLE_KEY` | Clé `service_role` de **staging uniquement** (assertions + nettoyage) |
+   | `WEBHOOK_SECRET` | Même valeur que `SLICKPAY_WEBHOOK_SECRET` côté serveur |
+   | `TEST_EMAIL` / `TEST_PASSWORD` | Compte de test **non-admin** |
+   | `ITEM_NAME` / `ITEM_SERVICE` | Article et service de test (ex. `Netflix 1 mois` / `Netflix`) |
 
 3. Lance la suite :
 
@@ -55,13 +55,6 @@ Les tests E2E s'exécutent contre une **base Supabase de staging dédiée** (jam
 ```bash
 npm run test:all
 ```
-
-## Configuration SlickPay
-
-La création d'une facture utilise `SLICKPAY_PUBLIC_KEY`, `SLICKPAY_WEBHOOK_URL`,
-`WEBHOOK_SECRET` et `FRONTEND_URL`. Configure aussi `SLICKPAY_ACCOUNT_UUID` avec
-l'UUID du compte bénéficiaire SlickPay. Ce dernier est indispensable lorsqu'aucun
-compte bénéficiaire par défaut n'est défini dans SlickPay.
 
 ## Suivi Meta et alertes de stock
 
