@@ -19,6 +19,7 @@ export function isAdmin(email?: string | null, appMetadata?: Record<string, unkn
 
 export interface AuthedRequest extends Request {
   adminEmail?: string;
+  adminUserId?: string;
 }
 
 export async function requireAdmin(
@@ -51,6 +52,7 @@ export async function requireAdmin(
     }
 
     req.adminEmail = email;
+    req.adminUserId = data.user.id;
     next();
   } catch (err) {
     res.status(500).json({ error: "Erreur interne du serveur." });

@@ -5,6 +5,7 @@ import webhookRouter from "./webhook";
 import authRouter from "./auth";
 import ordersRouter from "./orders";
 import adminRouter from "./admin";
+import promosRouter from "./promos";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(webhookRouter);
 router.use(authRouter);
 router.use(ordersRouter);
 router.use(adminRouter);
+router.use(promosRouter);
 
 export default router;

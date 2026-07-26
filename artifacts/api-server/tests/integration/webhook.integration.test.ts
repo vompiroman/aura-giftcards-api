@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { notifyAdminMock, sendMetaPurchaseMock, rpcMock, fromMock } = vi.hoisted(() => ({
+const { notifyAdminMock, sendMetaPurchaseMock, appendAuditLogMock, rpcMock, fromMock } = vi.hoisted(() => ({
   notifyAdminMock: vi.fn(),
   sendMetaPurchaseMock: vi.fn(),
+  appendAuditLogMock: vi.fn(),
   rpcMock: vi.fn(),
   fromMock: vi.fn(),
 }));
 
 vi.mock("../../src/lib/notifyAdmin", () => ({ notifyAdmin: notifyAdminMock }));
 vi.mock("../../src/lib/metaConversions", () => ({ sendMetaPurchase: sendMetaPurchaseMock }));
+vi.mock("../../src/lib/auditLog", () => ({ appendAuditLog: appendAuditLogMock }));
 
 vi.mock("../../src/lib/supabase", () => ({
   supabase: { rpc: rpcMock, from: fromMock },
@@ -219,6 +221,29 @@ describe("POST /api/webhook", () => {
     expect(replay.status).toBe(200);
     expect(replay.body.idempotent).toBe(true);
     expect(sendMetaPurchaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("ne lance qu'une attribution lors de deux webhooks concurrents", async () => {
+    rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
+    fromMock.mockImplementation(statefulOrderQueries({
+      order_id: "ORD-concurrent-1",
+      status: "pending",
+      payment_status: "unpaid",
+      amount: 800,
+      assigned_email: "client@example.com",
+      slickpay_invoice_id: "INV-ORD-concurrent-1",
+      items: [{ name: "Netflix 1 mois", quantity: 1 }],
+      marketing_consent: false,
+      meta_purchase_sent_at: null,
+    }));
+
+    const results = await Promise.all([1, 2].map(() => request(app)
+      .post("/api/webhook")
+      .set("x-webhook-secret", WEBHOOK_SECRET)
+      .send(webhookPayload("ORD-concurrent-1"))));
+
+    expect(results.every((result) => result.status === 200)).toBe(true);
+    expect(rpcMock).toHaveBeenCalledTimes(1);
   });
 
   it("confirme le paiement même si Meta refuse l'événement", async () => {
