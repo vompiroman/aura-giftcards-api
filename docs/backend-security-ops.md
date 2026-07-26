@@ -7,6 +7,7 @@ the new columns/tables:
 
 1. `migration_meta_marketing_consent.sql`
 2. `migration_security_ops.sql`
+3. `migration_promo_payment_reservation.sql`
 
 Confirm each transaction succeeds before the next one. The stock allocator
 remains the only allocation path; it locks the order and inventory rows inside

@@ -6,6 +6,7 @@ const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }));
 
 vi.mock("../../src/lib/supabase", () => ({
   supabaseAdmin: { from: fromMock },
+  supabaseAuth: { auth: { getUser: vi.fn(async () => ({ data: { user: { email: "client@example.com" } }, error: null })) } },
 }));
 vi.mock("../../src/middleware/requireAdmin", () => ({
   requireAdmin: (req: any, _res: any, next: any) => {
@@ -85,6 +86,45 @@ describe("admin promo contract", () => {
       active: false,
       masked_code: "AURA••••",
       usage_count: 3,
+    });
+  });
+
+  it("validates a promo server-side without reserving usage", async () => {
+    fromMock.mockReturnValueOnce({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn(async () => ({
+              data: {
+                id: promo.id,
+                discount_type: "percentage",
+                discount_value: 10,
+                starts_at: null,
+                ends_at: null,
+                max_uses: 10,
+                max_uses_per_client: 1,
+                services: ["netflix"],
+                active: true,
+              },
+              error: null,
+            })),
+          })),
+        })),
+      })),
+    });
+    const app = express();
+    app.use(express.json(), promosRouter);
+
+    const response = await request(app)
+      .post("/validate-promo")
+      .set("Authorization", "Bearer valid-token")
+      .send({ code: "AURA10", items: [{ name: "Netflix 1 mois", quantity: 1 }] })
+      .expect(200);
+    expect(response.body).toMatchObject({
+      valid: true,
+      discount_amount: 60,
+      total: 540,
+      subtotal: 600,
     });
   });
 });
