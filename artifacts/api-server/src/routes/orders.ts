@@ -18,6 +18,7 @@ import { notifyAdmin } from "../lib/notifyAdmin";
 import { summarizeAvailableStock } from "../lib/stockAlerts";
 
 const router: IRouter = Router();
+const MARKETING_CONSENT_VERSION = "2026-07-26";
 
 const createOrderLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -25,7 +26,7 @@ const createOrderLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: { xForwardedForHeader: false, default: false },
-  message: { error: "Trop de commandes crÃƒÂ©ÃƒÂ©es, rÃƒÂ©essayez dans une minute." },
+  message: { error: "Trop de commandes créées, réessayez dans une minute." },
 });
 
 const credentialLimiter = rateLimit({
@@ -33,7 +34,7 @@ const credentialLimiter = rateLimit({
   max: 6,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Trop de modifications. RÃƒÂ©essayez plus tard." },
+  message: { error: "Trop de modifications. Réessayez plus tard." },
 });
 
 async function getAuthedEmail(req: Request): Promise<string | null> {
@@ -51,7 +52,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
   try {
     const email = await getAuthedEmail(req);
     if (!email) {
-      res.status(401).json({ error: "Token invalide ou expirÃƒÂ©." });
+      res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
 
@@ -63,6 +64,14 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     }
 
     const orderId = "ORD-" + crypto.randomUUID();
+    const marketingConsent = req.body?.marketing_consent === true;
+    if (
+      marketingConsent
+      && req.body?.marketing_consent_version !== MARKETING_CONSENT_VERSION
+    ) {
+      res.status(400).json({ error: "Version du consentement marketing invalide." });
+      return;
+    }
 
     const { data: inserted, error: insertError } = await supabaseAdmin.from("orders").insert({
       order_id: orderId,
@@ -71,17 +80,20 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       amount: pricing.amount,
       status: "pending",
       payment_status: "unpaid",
+      marketing_consent: marketingConsent,
+      marketing_consent_at: marketingConsent ? new Date().toISOString() : null,
+      consent_version: marketingConsent ? MARKETING_CONSENT_VERSION : null,
     }).select("order_id");
 
     if (insertError) {
       req.log?.error({ insertError }, "Supabase error creating order");
-      res.status(500).json({ error: "Erreur lors de la crÃƒÂ©ation de la commande." });
+      res.status(500).json({ error: "Erreur lors de la création de la commande." });
       return;
     }
 
     if (!inserted || inserted.length === 0) {
       console.error("[create-order] Insert returned 0 rows. RLS may be blocking inserts. Check that SUPABASE_KEY is the service_role key, not the anon key.");
-      res.status(500).json({ error: "La commande n'a pas pu ÃƒÂªtre enregistrÃƒÂ©e. Contactez le support." });
+      res.status(500).json({ error: "La commande n'a pas pu être enregistrée. Contactez le support." });
       return;
     }
 
@@ -96,7 +108,7 @@ router.get("/my-orders", async (req, res): Promise<any> => {
   try {
     const email = await getAuthedEmail(req);
     if (!email) {
-      res.status(401).json({ error: "Token invalide ou expirÃƒÂ©." });
+      res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
 
@@ -110,7 +122,7 @@ router.get("/my-orders", async (req, res): Promise<any> => {
 
     if (error) {
       req.log?.error({ error }, "Supabase error fetching orders");
-      res.status(500).json({ error: "Erreur lors de la rÃƒÂ©cupÃƒÂ©ration." });
+      res.status(500).json({ error: "Erreur lors de la récupération." });
       return;
     }
 
@@ -175,7 +187,7 @@ router.get("/validate-order", async (req, res): Promise<any> => {
 
     const { data: order, error: fetchError } = await supabaseAdmin
       .from("orders")
-      .select("order_id, status, payment_status, assigned_email, expires_at")
+      .select("order_id, status, payment_status, assigned_email, expires_at, amount, items")
       .eq("order_id", orderId)
       .single();
 
@@ -184,13 +196,15 @@ router.get("/validate-order", async (req, res): Promise<any> => {
     }
 
     if (!email || (order.assigned_email?.toLowerCase() !== email.toLowerCase() && !isAdmin(email))) {
-      return res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ©." });
+      return res.status(403).json({ error: "Accès refusé." });
     }
 
     return res.json({
       status: order.status,
       payment_status: order.payment_status,
       expires_at: order.expires_at,
+      amount: order.amount,
+      items: publicOrderItems(order.items),
     });
   } catch (err) {
     req.log?.error({ err }, "Validation error");
@@ -209,18 +223,12 @@ function validCronSecret(header: string | undefined): boolean {
 
 router.post("/cron/reminders", async (req, res): Promise<any> => {
   if (!process.env.CRON_SECRET) {
-    return res.status(503).json({ error: "CRON_SECRET non configurÃƒÂ©." });
+    return res.status(503).json({ error: "CRON_SECRET non configuré." });
   }
   if (!validCronSecret(req.get("x-cron-secret"))) {
-    return res.status(401).json({ error: "Non autorisÃƒÂ©" });
+    return res.status(401).json({ error: "Non autorisé" });
   }
   try {
-    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-    if (!webhookUrl) {
-      res.status(500).json({ error: "DISCORD_WEBHOOK_URL non dÃƒÂ©fini." });
-      return;
-    }
-    
     const now = new Date();
     const threeDaysFromNow = new Date();
     threeDaysFromNow.setDate(now.getDate() + 3);
@@ -242,30 +250,28 @@ router.post("/cron/reminders", async (req, res): Promise<any> => {
     }
     
     if (!expiringOrders || expiringOrders.length === 0) {
-      res.json({ message: "Aucun rappel nÃƒÂ©cessaire aujourd'hui." });
+      res.json({ message: "Aucun rappel nécessaire aujourd'hui." });
       return;
     }
     
     let sentCount = 0;
     for (const order of expiringOrders) {
-      // PRE-FILLED WHATSAPP LINK FOR ADMIN
-      const message = `Bonjour Aura Stream ! Mon abonnement se termine dans 3 jours et je souhaite le renouveler pour ne pas perdre l'accÃƒÂ¨s.`;
+      const message = `Bonjour Aura Stream ! Mon abonnement se termine dans 3 jours et je souhaite le renouveler pour ne pas perdre l'accès.`;
       const waLink = `https://wa.me/?text=${encodeURIComponent(message)}`;
 
-      const payload = {
-        content: `Ã°Å¸Å¡Â¨ **RAPPEL D'EXPIRATION IMMINENTE (J-3)** Ã°Å¸Å¡Â¨\n\n**Commande :** ${order.order_id}\n**Client :** ${order.assigned_email}\n**Articles :** ${orderItemSummary(order.items)}\n**Expire le :** ${new Date(order.expires_at).toLocaleDateString('fr-FR')}\n\nÃ°Å¸â€˜â€° **Action:** Cliquez ici pour contacter le client sur WhatsApp : ${waLink}`,
-        allowed_mentions: { parse: [] },
-      };
-      
-      await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      sentCount++;
+      const sent = await notifyAdmin(
+        `Rappel d'expiration imminente (J-3). Articles : ${orderItemSummary(order.items)}. Expire le ${new Date(order.expires_at).toLocaleDateString("fr-FR")}. Contacter le client sur WhatsApp : ${waLink}`,
+        {
+          level: "warning",
+          orderId: order.order_id,
+          email: order.assigned_email,
+          dedupeKey: `expiration-j3-${order.order_id}`,
+        },
+      );
+      if (sent) sentCount++;
     }
     
-    res.json({ message: `${sentCount} rappel(s) envoyÃƒÂ©(s) sur Discord.` });
+    res.json({ message: `${sentCount} rappel(s) envoyé(s) sur Discord.` });
   } catch (err) {
     req.log.error({ err }, "Cron error");
     res.status(500).json({ error: "Erreur interne" });
@@ -327,12 +333,12 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
 
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email) {
-      res.status(401).json({ error: "Token invalide ou expirÃƒÂ©." });
+      res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
     
     if (!isAdmin(userData.user.email)) {
-      res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ©. Vous n'ÃƒÂªtes pas administrateur." });
+      res.status(403).json({ error: "Accès refusé. Vous n'êtes pas administrateur." });
       return;
     }
 
@@ -343,7 +349,7 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
 
     if (error) {
       req.log.error({ error }, "Supabase error fetching all orders");
-      res.status(500).json({ error: "Erreur lors de la rÃƒÂ©cupÃƒÂ©ration des commandes." });
+      res.status(500).json({ error: "Erreur lors de la récupération des commandes." });
       return;
     }
 
@@ -367,7 +373,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
     if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
 
     if (!isAdmin(userData.user.email)) {
-      return res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ©. Admin requis." });
+      return res.status(403).json({ error: "Accès refusé. Admin requis." });
     }
 
     const { order_id, status } = req.body;
@@ -384,7 +390,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
       .single();
     if (currentOrderError || !currentOrder) return res.status(404).json({ error: "Commande introuvable." });
     if (status === "active" && currentOrder.payment_status !== "paid") {
-      return res.status(409).json({ error: "Impossible d'activer une commande dont le paiement n'est pas confirmÃƒÂ©." });
+      return res.status(409).json({ error: "Impossible d'activer une commande dont le paiement n'est pas confirmé." });
     }
 
     const update: Record<string, string> = { status };
@@ -396,7 +402,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
 
     if (updateError) {
       req.log.error({ updateError }, "Supabase error updating order status");
-      return res.status(500).json({ error: "Erreur lors de la mise ÃƒÂ  jour." });
+      return res.status(500).json({ error: "Erreur lors de la mise à jour." });
     }
 
     res.json({ success: true, status: status });
@@ -481,19 +487,19 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     const normalizedPassword = typeof password === "string" ? password : "";
     const normalizedWhatsapp = typeof whatsapp === "string" ? whatsapp.trim() : "";
     if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id) || !["spotify", "crunchyroll"].includes(normalizedService) || !normalizedEmail || !normalizedPassword || !normalizedWhatsapp || normalizedEmail.length > 254 || normalizedPassword.length > 256 || normalizedWhatsapp.length > 40) {
-      return res.status(400).json({ error: "DonnÃƒÂ©es manquantes" });
+      return res.status(400).json({ error: "Données manquantes" });
     }
 
     const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("order_id, assigned_email, status, payment_status, items").eq("order_id", order_id).single();
     if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
-    if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ©" });
-    if (order.payment_status !== "paid" || order.status === "cancelled") return res.status(409).json({ error: "Le paiement de cette commande n'est pas confirmÃƒÂ©." });
+    if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
+    if (order.payment_status !== "paid" || order.status === "cancelled") return res.status(409).json({ error: "Le paiement de cette commande n'est pas confirmé." });
 
     // Update items with credentials
     const items = parseOrderItems(order.items);
     
     const serviceItemExists = items.some((item: any) => typeof item?.name === "string" && item.name.toLowerCase().includes(normalizedService));
-    if (!serviceItemExists) return res.status(400).json({ error: "Service non prÃƒÂ©sent dans cette commande." });
+    if (!serviceItemExists) return res.status(400).json({ error: "Service non présent dans cette commande." });
 
     let updatedItems: any[];
     try {
@@ -503,7 +509,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
         whatsapp: normalizedWhatsapp,
       });
     } catch {
-      return res.status(503).json({ error: "Le stockage sÃƒÂ©curisÃƒÂ© des identifiants n'est pas configurÃƒÂ©." });
+      return res.status(503).json({ error: "Le stockage sécurisé des identifiants n'est pas configuré." });
     }
 
     const { data: updated, error: updateError } = await supabaseAdmin.from("orders")
@@ -516,27 +522,18 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     if (updateError) throw updateError;
     if (!updated?.length) return res.status(409).json({ error: "La commande n'est plus modifiable." });
 
-    // Notification Discord dÃƒÂ©sormais gÃƒÂ©rÃƒÂ©e cÃƒÂ´tÃƒÂ© serveur par /client-credentials
-    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-    if (webhookUrl) {
-      const frontendUrl = (process.env.FRONTEND_URL || "https://aura-stream.netlify.app").replace(/\/$/, "");
-      const validationLink = `${frontendUrl}/?admin=true`;
-      let icon = 'Ã°Å¸â€â€';
-       if (normalizedService.includes('spotify')) icon = 'Ã°Å¸Å½Âµ';
-       else if (normalizedService.includes('crunchyroll')) icon = 'Ã°Å¸ÂÂ¥';
-
-       const content = `${icon} **Nouveau compte ${normalizedService} ÃƒÂ  activer !**\n**Commande :** ${order_id}\n*(Les identifiants client sont disponibles uniquement dans le panneau sÃƒÂ©curisÃƒÂ©.)*\n\n[Ã°Å¸â€ºÂ Ã¯Â¸Â Valider et activer la commande](${validationLink})`;
-
-      try {
-        await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, allowed_mentions: { parse: [] } })
-        });
-      } catch (webhookErr) {
-        req.log.error({ webhookErr }, "Failed to send Discord webhook");
-      }
-    }
+    const frontendUrl = (process.env.FRONTEND_URL || "https://aura-stream.netlify.app").replace(/\/$/, "");
+    const validationLink = `${frontendUrl}/?admin=true`;
+    await notifyAdmin(
+      `Nouveau compte ${normalizedService} à activer. Les identifiants client sont disponibles uniquement dans le panneau sécurisé : ${validationLink}`,
+      {
+        level: "warning",
+        orderId: order_id,
+        service: normalizedService,
+        email: userData.user.email,
+        dedupeKey: `client-credentials-${order_id}-${normalizedService}`,
+      },
+    );
 
     res.json({ success: true });
   } catch (err) {
@@ -649,7 +646,7 @@ function extractNetflixCode(text: string, html: string, subject?: string): { cod
   const forbiddenKeywords = [
     'mot de passe',
     'password',
-    'contraseÃƒÂ±a',
+    'contraseña',
     'reinitialis',
     'reset',
     'restablece',
@@ -667,7 +664,7 @@ function extractNetflixCode(text: string, html: string, subject?: string): { cod
   );
 
   const CODE_NEAR_LABEL =
-    /(?:code|cÃƒÂ³digo|codice|zugangscode|verification code|code de vÃƒÂ©rification|votre code|access code|temporaire|connexion|login)\D{0,40}\b(\d{4})\b/i;
+    /(?:code|código|codice|zugangscode|verification code|code de vérification|votre code|access code|temporaire|connexion|login)\D{0,40}\b(\d{4})\b/i;
 
   const nearMatch = haystack.match(CODE_NEAR_LABEL);
   const code = nearMatch ? nearMatch[1] : undefined;
@@ -680,7 +677,7 @@ const otpLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Trop de tentatives. RÃƒÂ©essayez dans une minute." },
+  message: { error: "Trop de tentatives. Réessayez dans une minute." },
 });
 
 router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
@@ -700,7 +697,7 @@ router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
   }
 
   if (order.status !== "active" || order.payment_status !== "paid" || !order.expires_at || new Date(order.expires_at).getTime() <= Date.now()) {
-    return res.status(409).json({ error: "Cette commande n'est pas active ou son paiement n'est pas confirmÃƒÂ©." });
+    return res.status(409).json({ error: "Cette commande n'est pas active ou son paiement n'est pas confirmé." });
   }
 
   const { data: invItems, error: invError } = await supabaseAdmin
@@ -715,13 +712,13 @@ router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
   if (!invItems || invItems.length === 0) return res.status(404).json({ error: "Aucun compte Netflix disponible en stock pour cette commande." });
 
   const netflixAccount = invItems.find((i: any) => i.service.toLowerCase().includes("netflix")) || invItems[0];
-  if (!netflixAccount) return res.status(404).json({ error: "Pas de compte Netflix assignÃƒÂ©" });
+  if (!netflixAccount) return res.status(404).json({ error: "Pas de compte Netflix assigné" });
 
   const strat = resolveImapStrategy(netflixAccount);
   if (!strat.user || !strat.pass) return res.status(400).json({ error: "Identifiants IMAP manquants dans l'inventaire" });
   if (!isAllowedImapTarget(strat.host, netflixAccount.account_email, strat.port)) {
     req.log?.warn({ host: strat.host, port: strat.port }, "Blocked non-allowlisted IMAP target");
-    return res.status(400).json({ error: "Serveur IMAP non autorisÃƒÂ©." });
+    return res.status(400).json({ error: "Serveur IMAP non autorisé." });
   }
 
   const hostsToTry = [strat.host, strat.host === 'outlook.office365.com' ? 'imap-mail.outlook.com' : ''].filter(Boolean);
@@ -784,7 +781,7 @@ router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
         if (bestCode || bestLink) {
           return res.json({ success: true, code: bestCode, link: bestLink });
         } else {
-          return res.status(404).json({ error: "Aucun email Netflix rÃƒÂ©cent trouvÃƒÂ©. Assurez-vous d'avoir demandÃƒÂ© le code sur Netflix puis rÃƒÂ©essayez dans quelques secondes." });
+          return res.status(404).json({ error: "Aucun email Netflix récent trouvé. Assurez-vous d'avoir demandé le code sur Netflix puis réessayez dans quelques secondes." });
         }
       } finally {
         lock.release();
@@ -798,11 +795,11 @@ router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
   }
 
   const raw = lastError?.responseText || lastError?.message || '';
-  let userMessage = "Impossible de se connecter ÃƒÂ  la boÃƒÂ®te mail.";
+  let userMessage = "Impossible de se connecter à la boîte mail.";
   if (/AUTHENTICATE failed|AUTHENTICATIONFAILED|invalid credentials/i.test(raw)) {
-    userMessage = "Basic Auth refusÃƒÂ© par le serveur. Si vous utilisez Outlook, passez ce compte Netflix sur une adresse Gmail (@gmail.com) ou un domaine personnalisÃƒÂ© pour dÃƒÂ©bloquer l'IMAP.";
+    userMessage = "Basic Auth refusé par le serveur. Si vous utilisez Outlook, passez ce compte Netflix sur une adresse Gmail (@gmail.com) ou un domaine personnalisé pour débloquer l'IMAP.";
   } else if (/IMAP.*disabled|not enabled/i.test(raw)) {
-    userMessage = "L'accÃƒÂ¨s IMAP est dÃƒÂ©sactivÃƒÂ© sur ce compte. Activez-le dans les options du fournisseur.";
+    userMessage = "L'accès IMAP est désactivé sur ce compte. Activez-le dans les options du fournisseur.";
   }
 
   return res.status(502).json({ error: userMessage });
@@ -817,7 +814,7 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
-      return res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ©." });
+      return res.status(403).json({ error: "Accès refusé." });
     }
 
     const { data, error } = await supabaseAdmin
@@ -838,14 +835,14 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
-      return res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ©." });
+      return res.status(403).json({ error: "Accès refusé." });
     }
 
     const VALID_SERVICES = new Set(["netflix", "spotify", "crunchyroll"]);
     const MAX_BATCH = 100;
 
     const validateEntry = (e: any): string | null => {
-      if (!e || typeof e !== "object") return "EntrÃƒÂ©e invalide.";
+      if (!e || typeof e !== "object") return "Entrée invalide.";
       const svc = String(e.service || "").toLowerCase();
       if (!VALID_SERVICES.has(svc)) return `Service inconnu: ${e.service}`;
       if (!e.account_email || typeof e.account_email !== "string") return "Email manquant.";
@@ -893,7 +890,7 @@ router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
-      return res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ©." });
+      return res.status(403).json({ error: "Accès refusé." });
     }
 
     const { data: existing, error: lookupError } = await supabaseAdmin
@@ -903,7 +900,7 @@ router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
       .single();
     if (lookupError || !existing) return res.status(404).json({ error: "Compte introuvable." });
     if (existing.is_used || existing.assigned_order_id) {
-      return res.status(409).json({ error: "Ce compte est attribuÃƒÂ© et ne peut pas ÃƒÂªtre supprimÃƒÂ©." });
+      return res.status(409).json({ error: "Ce compte est attribué et ne peut pas être supprimé." });
     }
 
     const { data: deleted, error } = await supabaseAdmin
@@ -928,7 +925,7 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
-      return res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ©." });
+      return res.status(403).json({ error: "Accès refusé." });
     }
 
     const { account_email, account_password, profile_name, profile_pin } = req.body;
@@ -966,13 +963,13 @@ router.get("/health/mailbox", async (req, res): Promise<any> => {
 
 router.post("/cron/imap-cleanup", async (req, res): Promise<any> => {
   if (!process.env.CRON_SECRET) {
-    return res.status(503).json({ error: "CRON_SECRET non configurÃƒÂ©." });
+    return res.status(503).json({ error: "CRON_SECRET non configuré." });
   }
   if (!validCronSecret(req.get("x-cron-secret"))) {
-    return res.status(401).json({ error: "Non autorisÃƒÂ©" });
+    return res.status(401).json({ error: "Non autorisé" });
   }
   res.status(202).json({ accepted: true });
-  runCleanupCycle().catch((e) => console.error("[cleanup] Ãƒâ€°chec via endpoint :", e?.message || e));
+  runCleanupCycle().catch((e) => console.error("[cleanup] Échec via endpoint :", e?.message || e));
 });
 
 export default router;
