@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { getUserMock, notifyAdminMock, fromMock } = vi.hoisted(() => ({
+const { getUserMock, notifyAdminMock, notifyOperationsMock, fromMock } = vi.hoisted(() => ({
   getUserMock: vi.fn(),
   notifyAdminMock: vi.fn(),
+  notifyOperationsMock: vi.fn(),
   fromMock: vi.fn(),
 }));
 
 vi.mock("../../src/lib/notifyAdmin", () => ({ notifyAdmin: notifyAdminMock }));
+vi.mock("../../src/lib/notifyOperations", () => ({ notifyOperations: notifyOperationsMock }));
 vi.mock("../../src/lib/supabase", () => ({
   supabase: { from: fromMock },
   supabaseAdmin: { from: fromMock },
@@ -48,6 +50,7 @@ describe("notifications administrateur", () => {
     process.env.CLIENT_CREDENTIALS_KEY = "dedicated-client-credentials-key-32-chars";
     process.env.CRON_SECRET = "test-cron-secret";
     notifyAdminMock.mockResolvedValue(true);
+    notifyOperationsMock.mockResolvedValue(true);
     getUserMock.mockResolvedValue({
       data: { user: { email: "client@example.com" } },
       error: null,
@@ -59,7 +62,7 @@ describe("notifications administrateur", () => {
     delete process.env.CRON_SECRET;
   });
 
-  it("envoie les demandes Spotify via notifyAdmin", async () => {
+  it("envoie les demandes Spotify via le webhook opérationnel", async () => {
     fromMock
       .mockReturnValueOnce(selectSingleStub({
         order_id: "ORD-spotify-1",
@@ -82,14 +85,12 @@ describe("notifications administrateur", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(notifyAdminMock).toHaveBeenCalledWith(
+    expect(notifyOperationsMock).toHaveBeenCalledWith(
       expect.stringContaining("à activer"),
-      expect.objectContaining({
-        level: "warning",
-        orderId: "ORD-spotify-1",
-        service: "spotify",
-      }),
+      expect.objectContaining({ orderId: "ORD-spotify-1", service: "spotify" }),
     );
+    expect(notifyAdminMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(notifyOperationsMock.mock.calls)).not.toContain("secret");
   });
 
   it("envoie les rappels d'expiration via notifyAdmin", async () => {

@@ -15,6 +15,7 @@ import {
   setClientCredentials,
 } from "../lib/orderItems";
 import { notifyAdmin } from "../lib/notifyAdmin";
+import { notifyOperations } from "../lib/notifyOperations";
 import { summarizeAvailableStock } from "../lib/stockAlerts";
 
 const router: IRouter = Router();
@@ -524,14 +525,11 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
 
     const frontendUrl = (process.env.FRONTEND_URL || "https://aura-stream.netlify.app").replace(/\/$/, "");
     const validationLink = `${frontendUrl}/?admin=true`;
-    await notifyAdmin(
+    await notifyOperations(
       `Nouveau compte ${normalizedService} à activer. Les identifiants client sont disponibles uniquement dans le panneau sécurisé : ${validationLink}`,
       {
-        level: "warning",
         orderId: order_id,
         service: normalizedService,
-        email: userData.user.email,
-        dedupeKey: `client-credentials-${order_id}-${normalizedService}`,
       },
     );
 
