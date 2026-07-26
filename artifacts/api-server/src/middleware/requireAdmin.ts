@@ -41,7 +41,7 @@ export async function requireAdmin(
     const { data, error } = await supabase.auth.getUser(token);
     const email = data?.user?.email?.toLowerCase();
     if (error || !email) {
-      res.status(401).json({ error: "Token invalide ou expirÃƒÂ©." });
+      res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
 

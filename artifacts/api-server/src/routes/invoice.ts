@@ -5,6 +5,7 @@ import { supabaseAuth, supabaseAdmin as supabase } from "../lib/supabase";
 import { PRICES } from "../config/prices";
 import { expiresAtFromItems, slickPayPaymentState } from "../lib/payments";
 import { notifyAdmin } from "../lib/notifyAdmin";
+import { sendMetaPurchase } from "../lib/metaConversions";
 
 const router = Router();
 
@@ -272,7 +273,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
       .is("slickpay_invoice_id", null)
       .select("order_id");
     if (claimError || !claimed?.length) {
-      res.status(409).json({ error: "Un paiement est dÃƒÂ©jÃƒÂ  en cours pour cette commande." });
+      res.status(409).json({ error: "Un paiement est déjà en cours pour cette commande." });
       return;
     }
 
@@ -369,7 +370,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
         orderId: order.order_id,
         dedupeKey: `invoice-save-${order.order_id}`,
       });
-      res.status(502).json({ error: "Le paiement ne peut pas ÃƒÂªtre initialisÃƒÂ©. Contactez le support." });
+      res.status(502).json({ error: "Le paiement ne peut pas être initialisé. Contactez le support." });
       return;
     }
 
@@ -401,7 +402,7 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
 
     const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("order_id, assigned_email, amount, status, payment_status, slickpay_invoice_id, items, expires_at")
+      .select("order_id, assigned_email, amount, status, payment_status, slickpay_invoice_id, items, expires_at, marketing_consent, meta_purchase_sent_at")
       .eq("order_id", orderId)
       .single();
 
@@ -476,16 +477,47 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       return;
     }
 
-    const { error: paidUpdateError } = await supabase
+    const { data: paymentTransition, error: paidUpdateError } = await supabase
       .from("orders")
       .update({ payment_status: "paid" })
       .eq("order_id", orderId)
-      .eq("status", "pending");
+      .eq("status", "pending")
+      .eq("payment_status", "unpaid")
+      .select("order_id");
 
     if (paidUpdateError) {
       req.log?.error({ paidUpdateError, orderId }, "Could not persist verified payment");
       res.status(500).json({ error: "Paiement confirmé mais enregistrement impossible. Le support a été alerté." });
       return;
+    }
+
+    if (!paymentTransition?.length) {
+      res.json({
+        verified: true,
+        payment_status: "paid",
+        order_status: order.status,
+        idempotent: true,
+      });
+      return;
+    }
+
+    if (order.marketing_consent === true && !order.meta_purchase_sent_at) {
+      const metaSent = await sendMetaPurchase({
+        orderId,
+        amount: Number(order.amount),
+        email: String(order.assigned_email || ""),
+        items: order.items,
+      });
+      if (metaSent) {
+        const { error: metaUpdateError } = await supabase
+          .from("orders")
+          .update({ meta_purchase_sent_at: new Date().toISOString() })
+          .eq("order_id", orderId)
+          .is("meta_purchase_sent_at", null);
+        if (metaUpdateError) {
+          req.log?.warn({ orderId }, "Could not persist Meta Purchase delivery marker");
+        }
+      }
     }
 
     const expiresAt = expiresAtFromItems(order.items);

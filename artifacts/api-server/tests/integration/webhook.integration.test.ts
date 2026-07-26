@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { notifyAdminMock, rpcMock, fromMock } = vi.hoisted(() => ({
+const { notifyAdminMock, sendMetaPurchaseMock, rpcMock, fromMock } = vi.hoisted(() => ({
   notifyAdminMock: vi.fn(),
+  sendMetaPurchaseMock: vi.fn(),
   rpcMock: vi.fn(),
   fromMock: vi.fn(),
 }));
 
 vi.mock("../../src/lib/notifyAdmin", () => ({ notifyAdmin: notifyAdminMock }));
+vi.mock("../../src/lib/metaConversions", () => ({ sendMetaPurchase: sendMetaPurchaseMock }));
 
 vi.mock("../../src/lib/supabase", () => ({
   supabase: { rpc: rpcMock, from: fromMock },
@@ -39,12 +41,52 @@ function orderQueryStub(orderRow: Record<string, unknown> | null) {
   return builder;
 }
 
+function statefulOrderQueries(orderRow: Record<string, any>) {
+  let paymentStatus = String(orderRow.payment_status);
+  return () => {
+    let updateValue: Record<string, unknown> | null = null;
+    let expectedPaymentStatus: string | null = null;
+    const builder: Record<string, any> = {};
+    builder.select = vi.fn((columns?: string) => {
+      if (updateValue && columns === "order_id") {
+        return Promise.resolve(
+          expectedPaymentStatus === paymentStatus
+            ? (() => {
+                paymentStatus = String(updateValue?.payment_status || paymentStatus);
+                return { data: [{ order_id: orderRow.order_id }], error: null };
+              })()
+            : { data: [], error: null },
+        );
+      }
+      return builder;
+    });
+    builder.eq = vi.fn((column: string, value: unknown) => {
+      if (column === "payment_status") expectedPaymentStatus = String(value);
+      return builder;
+    });
+    builder.neq = vi.fn(() => builder);
+    builder.is = vi.fn(() => builder);
+    builder.update = vi.fn((value: Record<string, unknown>) => {
+      updateValue = value;
+      return builder;
+    });
+    builder.single = vi.fn(async () => ({
+      data: orderRow ? { ...orderRow, payment_status: paymentStatus } : null,
+      error: null,
+    }));
+    builder.then = (resolve: any, reject: any) =>
+      Promise.resolve({ data: [{ order_id: orderRow.order_id }], error: null }).then(resolve, reject);
+    return builder;
+  };
+}
+
 describe("POST /api/webhook", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.WEBHOOK_SECRET = WEBHOOK_SECRET;
     process.env.SLICKPAY_API_KEY = "test-api-key";
     delete process.env.META_CAPI_ACCESS_TOKEN;
+    sendMetaPurchaseMock.mockResolvedValue(true);
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,
       json: async () => ({ completed: 1, data: { payment_status: "paid", amount: 800 } }),
@@ -57,6 +99,8 @@ describe("POST /api/webhook", () => {
       assigned_email: "client@example.com",
       slickpay_invoice_id: "INV-ORD-x",
       items: [{ name: "Netflix 1 mois", quantity: 1 }],
+      marketing_consent: false,
+      meta_purchase_sent_at: null,
     }));
   });
 
@@ -134,5 +178,71 @@ describe("POST /api/webhook", () => {
     expect(res.status).toBe(200);
     expect(res.body.verified).toBe(false);
     expect(rpcMock).not.toHaveBeenCalled();
+  });
+
+  it("n'envoie jamais Purchase sans consentement marketing", async () => {
+    rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
+
+    const res = await request(app)
+      .post("/api/webhook")
+      .set("x-webhook-secret", WEBHOOK_SECRET)
+      .send(webhookPayload("ORD-x"));
+
+    expect(res.status).toBe(200);
+    expect(sendMetaPurchaseMock).not.toHaveBeenCalled();
+  });
+
+  it("n'envoie qu'un Purchase lors du rejeu d'un webhook payé", async () => {
+    rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
+    fromMock.mockImplementation(statefulOrderQueries({
+      order_id: "ORD-meta-123",
+      status: "pending",
+      payment_status: "unpaid",
+      amount: 800,
+      assigned_email: "client@example.com",
+      slickpay_invoice_id: "INV-ORD-meta-123",
+      items: [{ name: "Netflix 1 mois", quantity: 1 }],
+      marketing_consent: true,
+      meta_purchase_sent_at: null,
+    }));
+
+    const first = await request(app)
+      .post("/api/webhook")
+      .set("x-webhook-secret", WEBHOOK_SECRET)
+      .send(webhookPayload("ORD-meta-123"));
+    const replay = await request(app)
+      .post("/api/webhook")
+      .set("x-webhook-secret", WEBHOOK_SECRET)
+      .send(webhookPayload("ORD-meta-123"));
+
+    expect(first.status).toBe(200);
+    expect(replay.status).toBe(200);
+    expect(replay.body.idempotent).toBe(true);
+    expect(sendMetaPurchaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirme le paiement même si Meta refuse l'événement", async () => {
+    rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
+    sendMetaPurchaseMock.mockResolvedValue(false);
+    fromMock.mockReturnValue(orderQueryStub({
+      order_id: "ORD-meta-fail",
+      status: "pending",
+      payment_status: "unpaid",
+      amount: 800,
+      assigned_email: "client@example.com",
+      slickpay_invoice_id: "INV-ORD-meta-fail",
+      items: [{ name: "Netflix 1 mois", quantity: 1 }],
+      marketing_consent: true,
+      meta_purchase_sent_at: null,
+    }));
+
+    const res = await request(app)
+      .post("/api/webhook")
+      .set("x-webhook-secret", WEBHOOK_SECRET)
+      .send(webhookPayload("ORD-meta-fail"));
+
+    expect(res.status).toBe(200);
+    expect(res.body.activated).toBe(true);
+    expect(rpcMock).toHaveBeenCalledTimes(1);
   });
 });

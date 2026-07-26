@@ -14,10 +14,7 @@ interface EncryptedValue {
 }
 
 function credentialKey(): Buffer {
-  const configured = process.env.CLIENT_CREDENTIALS_KEY
-    || process.env.SUPABASE_SERVICE_ROLE_KEY
-    || process.env.SUPABASE_KEY
-    || "";
+  const configured = process.env.CLIENT_CREDENTIALS_KEY || "";
   if (configured.length < 32) {
     throw new Error("CLIENT_CREDENTIALS_KEY must contain at least 32 characters.");
   }
