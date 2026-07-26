@@ -20,7 +20,6 @@ import { summarizeAvailableStock } from "../lib/stockAlerts";
 import { appendAuditLog } from "../lib/auditLog";
 import {
   calculatePromoDiscount,
-  clientPromoHash,
   hashPromoCode,
   normalizePromoCode,
   promoIsActive,
@@ -117,20 +116,6 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
         res.status(400).json({ error: "Code promo invalide ou non applicable." });
         return;
       }
-      const { count: totalUses } = await supabaseAdmin
-        .from("promo_redemptions")
-        .select("id", { count: "exact", head: true })
-        .eq("promo_code_id", candidate.id);
-      const { count: clientUses } = await supabaseAdmin
-        .from("promo_redemptions")
-        .select("id", { count: "exact", head: true })
-        .eq("promo_code_id", candidate.id)
-        .eq("client_hash", clientPromoHash(email));
-      if ((candidate.max_uses !== null && (totalUses || 0) >= candidate.max_uses)
-        || (candidate.max_uses_per_client !== null && (clientUses || 0) >= candidate.max_uses_per_client)) {
-        res.status(400).json({ error: "Code promo épuisé." });
-        return;
-      }
       promo = candidate;
       discountAmount = calculatePromoDiscount(pricing.amount, candidate);
     }
@@ -161,19 +146,6 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       console.error("[create-order] Insert returned 0 rows. RLS may be blocking inserts. Check that SUPABASE_KEY is the service_role key, not the anon key.");
       res.status(500).json({ error: "La commande n'a pas pu être enregistrée. Contactez le support." });
       return;
-    }
-
-    if (promo) {
-      const { data: reserved, error: reserveError } = await supabaseAdmin.rpc("reserve_promo_redemption", {
-        p_promo_code_id: promo.id,
-        p_order_id: orderId,
-        p_client_hash: clientPromoHash(email),
-      });
-      if (reserveError || reserved !== true) {
-        await supabaseAdmin.from("orders").delete().eq("order_id", orderId);
-        res.status(409).json({ error: "Code promo épuisé, réessayez sans ce code." });
-        return;
-      }
     }
 
     res.status(201).json({ order_id: orderId, amount: finalAmount, subtotal: pricing.amount, discount: discountAmount });
@@ -524,6 +496,17 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
     if (currentOrderError || !currentOrder) return res.status(404).json({ error: "Commande introuvable." });
     if (status === "active" && currentOrder.payment_status !== "paid") {
       return res.status(409).json({ error: "Impossible d'activer une commande dont le paiement n'est pas confirmé." });
+    }
+    if (status === "active") {
+      const { count: assignedCount, error: inventoryError } = await supabaseAdmin
+        .from("inventory")
+        .select("id", { count: "exact", head: true })
+        .eq("assigned_order_id", order_id)
+        .eq("is_used", true);
+      if (inventoryError) return res.status(503).json({ error: "Impossible de vérifier l'attribution du stock." });
+      if (!assignedCount) {
+        return res.status(409).json({ error: "Impossible d'activer une commande sans compte attribué." });
+      }
     }
 
     const update: Record<string, string> = { status };

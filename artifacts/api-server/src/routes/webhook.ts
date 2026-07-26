@@ -6,6 +6,7 @@ import { notifyAdmin } from "../lib/notifyAdmin";
 import { sendMetaPurchase } from "../lib/metaConversions";
 import { appendAuditLog } from "../lib/auditLog";
 import { recordPaymentFailure, resetPaymentFailure } from "../lib/paymentAlerts";
+import { clientPromoHash } from "../lib/promos";
 
 const router = Router();
 
@@ -63,7 +64,8 @@ async function verifyInvoiceWithSlickPay(invoiceId: string): Promise<InvoiceVeri
     const amount = Number(amountValue);
 
     return {
-      paid: completed === 1 || completed === true || completed === "1" || ["paid", "completed", "success"].includes(status),
+      paid: completed === 1 || completed === true || completed === "1" || String(completed).toLowerCase() === "true"
+        || ["paid", "completed", "success", "successful", "true"].includes(status),
       failed: ["failed", "cancelled", "canceled"].includes(status),
       amount: Number.isFinite(amount) ? amount : null,
     };
@@ -116,16 +118,24 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
 
     const invoiceId = String(req.body?.invoice_id ?? req.body?.id ?? "");
     const orderIdParam = String(req.body?.order_id ?? "");
-    const rawStatus = String(req.body?.status ?? req.body?.completed ?? "").toLowerCase();
+    const rawStatus = String(
+      req.body?.status
+      ?? req.body?.payment_status
+      ?? req.body?.completed
+      ?? req.body?.data?.status
+      ?? req.body?.data?.payment_status
+      ?? req.body?.data?.completed
+      ?? "",
+    ).toLowerCase();
     
     if (!invoiceId || invoiceId.length > 160) return res.status(400).json({ error: "invoice_id manquant" });
 
-    const isPaid = ["completed", "paid", "success", "1"].includes(rawStatus);
+    const isPaid = ["completed", "paid", "success", "successful", "1", "true"].includes(rawStatus);
     const isFailed = ["failed", "cancelled", "canceled", "0"].includes(rawStatus);
 
     const query = supabase
       .from("orders")
-      .select("order_id, assigned_email, status, payment_status, items, amount, slickpay_invoice_id, marketing_consent, meta_purchase_sent_at")
+      .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, slickpay_invoice_id, marketing_consent, meta_purchase_sent_at")
       .eq("slickpay_invoice_id", invoiceId);
 
     const { data: order, error: fetchErr } = await query.single();
@@ -173,19 +183,38 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
       }
 
       // Seul ce webhook authentifié constitue une preuve de paiement.
-      const { data: paymentTransition, error: paymentUpdateError } = await supabase
-        .from("orders")
-        .update({ status: "pending", payment_status: "paid" })
-        .eq("order_id", order.order_id)
-        .eq("payment_status", "unpaid")
-        .select("order_id");
+      const wasAlreadyPaid = order.payment_status === "paid";
+      const { data: paymentTransition, error: paymentUpdateError } = wasAlreadyPaid
+        ? { data: [{ order_id: order.order_id }], error: null }
+        : await supabase
+          .from("orders")
+          .update({ status: "pending", payment_status: "paid" })
+          .eq("order_id", order.order_id)
+          .eq("payment_status", "unpaid")
+          .select("order_id");
       if (paymentUpdateError) throw paymentUpdateError;
 
-      if (!paymentTransition?.length) {
+      if (!wasAlreadyPaid && !paymentTransition?.length) {
         return res.status(200).json({ received: true, idempotent: true });
       }
 
-      if (order.marketing_consent === true && !order.meta_purchase_sent_at) {
+      if (order.promo_code_id) {
+        const { data: reserved, error: reserveError } = await supabase.rpc("reserve_promo_redemption", {
+          p_promo_code_id: order.promo_code_id,
+          p_order_id: order.order_id,
+          p_client_hash: clientPromoHash(String(order.assigned_email || "")),
+        });
+        if (reserveError || reserved !== true) {
+          await notifyAdmin(`Paiement confirmé mais code promo indisponible pour ${order.order_id}.`, {
+            level: "critical",
+            orderId: order.order_id,
+            dedupeKey: `promo-reservation-${order.order_id}`,
+          });
+          return res.status(200).json({ received: true, needs_manual: true, promo_unavailable: true });
+        }
+      }
+
+      if (!wasAlreadyPaid && order.marketing_consent === true && !order.meta_purchase_sent_at) {
         const metaSent = await sendMetaPurchase({
           orderId: order.order_id,
           amount: Number(order.amount),

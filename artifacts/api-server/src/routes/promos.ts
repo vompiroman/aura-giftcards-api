@@ -1,12 +1,56 @@
 import { Router } from "express";
 import { requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
-import { supabaseAdmin } from "../lib/supabase";
-import { hashPromoCode, normalizePromoCode, presentPromoCode } from "../lib/promos";
+import rateLimit from "express-rate-limit";
+import { supabaseAdmin, supabaseAuth } from "../lib/supabase";
+import { computeCart } from "../config/prices";
+import { calculatePromoDiscount, hashPromoCode, normalizePromoCode, presentPromoCode, promoIsActive, promoSupportsItems } from "../lib/promos";
 import { appendAuditLog } from "../lib/auditLog";
 
 const router = Router();
 const admin = requireAdmin;
 const PROMO_FIELDS = "id, code_prefix, discount_type, discount_value, starts_at, ends_at, max_uses, max_uses_per_client, services, active, created_at";
+const promoValidationLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Trop de validations de codes promo. Réessayez dans une minute." },
+});
+
+async function getPromoEmail(req: any): Promise<string | null> {
+  const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+  if (!authorization.startsWith("Bearer ")) return null;
+  const token = authorization.slice(7).trim();
+  if (!token) return null;
+  const { data, error } = await supabaseAuth.auth.getUser(token);
+  return error || !data.user?.email ? null : data.user.email.trim().toLowerCase();
+}
+
+router.post("/validate-promo", promoValidationLimiter, async (req, res) => {
+  const email = await getPromoEmail(req);
+  if (!email) return res.status(401).json({ error: "Token invalide ou expiré." });
+  const code = normalizePromoCode(req.body?.code);
+  const pricing = computeCart(req.body?.items);
+  if (!code || !pricing.ok) return res.status(400).json({ valid: false, error: "Code promo ou panier invalide." });
+  const { data: promo, error } = await supabaseAdmin
+    .from("promo_codes")
+    .select("id, discount_type, discount_value, starts_at, ends_at, max_uses, max_uses_per_client, services, active")
+    .eq("code_hash", hashPromoCode(code))
+    .eq("active", true)
+    .single();
+  if (error || !promo || !promoIsActive(promo) || !promoSupportsItems(promo, pricing.cleanItems)) {
+    return res.status(400).json({ valid: false, error: "Code promo invalide ou non applicable." });
+  }
+  const discount = calculatePromoDiscount(pricing.amount, promo);
+  return res.json({
+    valid: true,
+    code,
+    discount_amount: discount,
+    total: Math.max(0, pricing.amount - discount),
+    subtotal: pricing.amount,
+    message: "Code promo appliqué.",
+  });
+});
 
 router.get("/admin/promo-codes", admin, async (_req, res) => {
   const { data, error } = await supabaseAdmin
@@ -19,7 +63,7 @@ router.get("/admin/promo-codes", admin, async (_req, res) => {
 
 router.post("/admin/promo-codes", admin, async (req: AuthedRequest, res) => {
   const code = normalizePromoCode(req.body?.code);
-  const type = req.body?.discount_type;
+  const type = req.body?.discount_type === "percent" ? "percentage" : req.body?.discount_type;
   const value = Number(req.body?.discount_value);
   const maxUses = req.body?.max_uses === null || req.body?.max_uses === undefined
     ? null : Number(req.body.max_uses);
