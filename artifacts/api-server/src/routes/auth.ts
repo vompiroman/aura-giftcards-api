@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import { supabaseAuth as supabase } from "../lib/supabase";
 import { isAdmin } from "../middleware/requireAdmin";
 import axios from "axios";
+import { appendAuditLog } from "../lib/auditLog";
 
 const router: IRouter = Router();
 
@@ -128,6 +129,14 @@ router.post("/login", loginLimiter, async (req, res) => {
       expires_at: data.session?.expires_at,
       user: publicUser(data.user),
     });
+    if (isAdmin(data.user?.email, data.user?.app_metadata)) {
+      void appendAuditLog({
+        action: "admin_login",
+        actorUserId: data.user?.id,
+        targetType: "auth",
+        details: { method: "password" },
+      });
+    }
   } catch (err) {
     req.log.error({ err }, "Unexpected error in POST /login");
     res.status(500).json({ error: "Erreur interne du serveur." });

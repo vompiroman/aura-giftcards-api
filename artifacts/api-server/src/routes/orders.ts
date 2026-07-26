@@ -17,6 +17,15 @@ import {
 import { notifyAdmin } from "../lib/notifyAdmin";
 import { notifyOperations } from "../lib/notifyOperations";
 import { summarizeAvailableStock } from "../lib/stockAlerts";
+import { appendAuditLog } from "../lib/auditLog";
+import {
+  calculatePromoDiscount,
+  clientPromoHash,
+  hashPromoCode,
+  normalizePromoCode,
+  promoIsActive,
+  promoSupportsItems,
+} from "../lib/promos";
 
 const router: IRouter = Router();
 const MARKETING_CONSENT_VERSION = "2026-07-26";
@@ -36,6 +45,22 @@ const credentialLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Trop de modifications. Réessayez plus tard." },
+});
+
+const orderReadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Trop de consultations. Réessayez dans une minute." },
+});
+
+const credentialReadLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Trop de consultations d'identifiants. Réessayez plus tard." },
 });
 
 async function getAuthedEmail(req: Request): Promise<string | null> {
@@ -74,11 +99,51 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       return;
     }
 
+    const promoCode = req.body?.promo_code === undefined ? null : normalizePromoCode(req.body.promo_code);
+    if (req.body?.promo_code !== undefined && !promoCode) {
+      res.status(400).json({ error: "Code promo invalide." });
+      return;
+    }
+    let promo: any = null;
+    let discountAmount = 0;
+    if (promoCode) {
+      const { data: candidate, error: promoError } = await supabaseAdmin
+        .from("promo_codes")
+        .select("id, discount_type, discount_value, starts_at, ends_at, max_uses, max_uses_per_client, services, active")
+        .eq("code_hash", hashPromoCode(promoCode))
+        .eq("active", true)
+        .single();
+      if (promoError || !candidate || !promoIsActive(candidate) || !promoSupportsItems(candidate, pricing.cleanItems)) {
+        res.status(400).json({ error: "Code promo invalide ou non applicable." });
+        return;
+      }
+      const { count: totalUses } = await supabaseAdmin
+        .from("promo_redemptions")
+        .select("id", { count: "exact", head: true })
+        .eq("promo_code_id", candidate.id);
+      const { count: clientUses } = await supabaseAdmin
+        .from("promo_redemptions")
+        .select("id", { count: "exact", head: true })
+        .eq("promo_code_id", candidate.id)
+        .eq("client_hash", clientPromoHash(email));
+      if ((candidate.max_uses !== null && (totalUses || 0) >= candidate.max_uses)
+        || (candidate.max_uses_per_client !== null && (clientUses || 0) >= candidate.max_uses_per_client)) {
+        res.status(400).json({ error: "Code promo épuisé." });
+        return;
+      }
+      promo = candidate;
+      discountAmount = calculatePromoDiscount(pricing.amount, candidate);
+    }
+    const finalAmount = Math.max(0, pricing.amount - discountAmount);
+
     const { data: inserted, error: insertError } = await supabaseAdmin.from("orders").insert({
       order_id: orderId,
       assigned_email: email,
       items: pricing.cleanItems,
-      amount: pricing.amount,
+      amount: finalAmount,
+      subtotal_amount: pricing.amount,
+      discount_amount: discountAmount,
+      promo_code_id: promo?.id || null,
       status: "pending",
       payment_status: "unpaid",
       marketing_consent: marketingConsent,
@@ -98,14 +163,27 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       return;
     }
 
-    res.status(201).json({ order_id: orderId, amount: pricing.amount });
+    if (promo) {
+      const { data: reserved, error: reserveError } = await supabaseAdmin.rpc("reserve_promo_redemption", {
+        p_promo_code_id: promo.id,
+        p_order_id: orderId,
+        p_client_hash: clientPromoHash(email),
+      });
+      if (reserveError || reserved !== true) {
+        await supabaseAdmin.from("orders").delete().eq("order_id", orderId);
+        res.status(409).json({ error: "Code promo épuisé, réessayez sans ce code." });
+        return;
+      }
+    }
+
+    res.status(201).json({ order_id: orderId, amount: finalAmount, subtotal: pricing.amount, discount: discountAmount });
   } catch (err) {
     req.log?.error({ err }, "Unexpected error in POST /create-order");
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
 });
 
-router.get("/my-orders", async (req, res): Promise<any> => {
+router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
   try {
     const email = await getAuthedEmail(req);
     if (!email) {
@@ -178,7 +256,7 @@ function escapeHtml(input: string): string {
   ));
 }
 
-router.get("/validate-order", async (req, res): Promise<any> => {
+router.get("/validate-order", orderReadLimiter, async (req, res): Promise<any> => {
   try {
     const email = await getAuthedEmail(req);
     const orderId = String(req.query.id || "");
@@ -343,10 +421,64 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       return;
     }
 
-    const { data, error } = await supabaseAdmin
-      .from("orders")
-      .select("id, order_id, assigned_email, amount, status, payment_status, items, created_at, expires_at, activated_at")
-      .order("created_at", { ascending: false });
+    const rawPage = Number.parseInt(String(req.query.page || "1"), 10);
+    const rawPageSize = Number.parseInt(String(req.query.limit || req.query.page_size || "50"), 10);
+    const page = Number.isFinite(rawPage) ? Math.max(1, Math.min(rawPage, 10_000)) : 1;
+    const pageSize = Number.isFinite(rawPageSize) ? Math.max(1, Math.min(rawPageSize, 100)) : 50;
+    const statusFilter = typeof req.query.status === "string"
+      && ["pending", "active", "cancelled", "completed"].includes(req.query.status)
+      ? req.query.status
+      : null;
+    const search = typeof req.query.search === "string"
+      ? req.query.search.replace(/[,%()]/g, " ").trim().slice(0, 120)
+      : "";
+    const service = typeof req.query.service === "string"
+      ? req.query.service.replace(/[,%()]/g, " ").trim().slice(0, 60)
+      : "";
+    const dateFrom = typeof req.query.date_from === "string" ? req.query.date_from : "";
+    const dateTo = typeof req.query.date_to === "string" ? req.query.date_to : "";
+    const sort = typeof req.query.sort === "string" ? req.query.sort : "created_at_desc";
+    const sortConfig: Record<string, { column: string; ascending: boolean }> = {
+      created_at_desc: { column: "created_at", ascending: false },
+      created_at_asc: { column: "created_at", ascending: true },
+      amount_desc: { column: "amount", ascending: false },
+      amount_asc: { column: "amount", ascending: true },
+    };
+    const selectedSort = sortConfig[sort] || sortConfig.created_at_desc;
+    const buildOrdersQuery = (applyServiceFilter: boolean) => {
+      let query = supabaseAdmin
+        .from("orders")
+        .select("id, order_id, assigned_email, amount, status, payment_status, items, created_at, expires_at, activated_at", { count: "exact" })
+        .order(selectedSort.column, { ascending: selectedSort.ascending });
+      if (statusFilter) query = query.eq("status", statusFilter);
+      if (search) query = query.or(`order_id.ilike.%${search}%,assigned_email.ilike.%${search}%`);
+      // items is JSON/JSONB in existing deployments. Cast before applying
+      // ilike so PostgREST does not reject a text operator on jsonb.
+      if (applyServiceFilter && service) query = query.filter("items::text", "ilike", `%${service}%`);
+      if (dateFrom) query = query.gte("created_at", dateFrom);
+      if (dateTo) query = query.lte("created_at", dateTo);
+      return query;
+    };
+
+    const offset = (page - 1) * pageSize;
+    let { data, error, count } = await buildOrdersQuery(Boolean(service)).range(offset, offset + pageSize - 1);
+
+    // Older PostgREST versions may not allow a cast in a filter expression.
+    // Fall back to a bounded, controlled in-memory JSON filter rather than
+    // returning a provider error (500) to the admin UI.
+    if (error && service) {
+      const fallback = await buildOrdersQuery(false).range(0, 9_999);
+      if (!fallback.error) {
+        const filtered = (fallback.data || []).filter((order: any) =>
+          parseOrderItems(order.items).some((item: any) =>
+            String(item?.name || item?.service || "").toLowerCase().includes(service.toLowerCase()),
+          ),
+        );
+        data = filtered.slice(offset, offset + pageSize);
+        count = filtered.length;
+        error = null;
+      }
+    }
 
     if (error) {
       req.log.error({ error }, "Supabase error fetching all orders");
@@ -357,7 +489,7 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
     res.json({ orders: (data || []).map((order: any) => ({
       ...order,
       items: adminOrderItems(order.items),
-    })) });
+    })), total: count || 0, page, limit: pageSize, total_pages: Math.ceil((count || 0) / pageSize) });
   } catch (err) {
     req.log.error({ err }, "Unexpected error in GET /admin/all-orders");
     res.status(500).json({ error: "Erreur interne du serveur." });
@@ -406,6 +538,13 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
       return res.status(500).json({ error: "Erreur lors de la mise à jour." });
     }
 
+    void appendAuditLog({
+      action: "admin_order_status_update",
+      actorUserId: userData.user.id,
+      targetType: "order",
+      targetId: order_id,
+      details: { status },
+    });
     res.json({ success: true, status: status });
   } catch (err) {
     req.log.error({ err }, "Unexpected error in POST /admin/update-order-status");
@@ -414,7 +553,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
 });
 
 // GET user credentials from inventory
-router.get("/my-credentials", async (req, res): Promise<void> => {
+router.get("/my-credentials", credentialReadLimiter, async (req, res): Promise<void> => {
   try {
     const email = await getAuthedEmail(req);
     if (!email) {
@@ -678,7 +817,7 @@ const otpLimiter = rateLimit({
   message: { error: "Trop de tentatives. Réessayez dans une minute." },
 });
 
-router.post("/get-netflix-otp", otpLimiter, async (req, res): Promise<any> => {
+router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, res): Promise<any> => {
   const { order_id } = req.body;
   if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id)) return res.status(400).json({ error: "Identifiant de commande invalide." });
 
@@ -874,6 +1013,12 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
 
     const { error } = await supabaseAdmin.from("inventory").insert(cleanRows);
     if (error) throw error;
+    void appendAuditLog({
+      action: "admin_inventory_create",
+      actorUserId: userData.user.id,
+      targetType: "inventory",
+      details: { count: cleanRows.length, services: [...new Set(cleanRows.map((row) => row.service))] },
+    });
     return res.status(201).json({ success: true, added: cleanRows.length });
   } catch (err: any) {
     req.log?.error({ code: err?.code }, "Admin inventory insert failed");
@@ -910,6 +1055,12 @@ router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
       .select("id");
     if (error) throw error;
     if (!deleted?.length) return res.status(409).json({ error: "Ce compte n'est plus supprimable." });
+    void appendAuditLog({
+      action: "admin_inventory_delete",
+      actorUserId: userData.user.id,
+      targetType: "inventory",
+      targetId: req.params.id,
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
@@ -935,6 +1086,13 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
 
     const { error } = await supabaseAdmin.from("inventory").update(updates).eq("id", req.params.id);
     if (error) throw error;
+    void appendAuditLog({
+      action: "admin_inventory_update",
+      actorUserId: userData.user.id,
+      targetType: "inventory",
+      targetId: req.params.id,
+      details: { fields: Object.keys(updates) },
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });

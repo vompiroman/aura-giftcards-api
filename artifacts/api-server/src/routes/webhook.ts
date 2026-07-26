@@ -4,6 +4,8 @@ import crypto from "crypto";
 import { supabaseAdmin as supabase } from "../lib/supabase";
 import { notifyAdmin } from "../lib/notifyAdmin";
 import { sendMetaPurchase } from "../lib/metaConversions";
+import { appendAuditLog } from "../lib/auditLog";
+import { recordPaymentFailure, resetPaymentFailure } from "../lib/paymentAlerts";
 
 const router = Router();
 
@@ -229,12 +231,20 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
         return res.status(200).json({ received: true, needs_manual: true });
       }
 
+      resetPaymentFailure("webhook", order.order_id);
+      void appendAuditLog({
+        action: "order_activation",
+        targetType: "order",
+        targetId: order.order_id,
+        details: { source: "slickpay_webhook" },
+      });
       return res.status(200).json({ received: true, activated: true });
     }
 
     return res.status(200).json({ received: true, ignored: rawStatus });
   } catch (err) {
     console.error("Webhook payment processing failed.");
+    void recordPaymentFailure("webhook", String(req.body?.order_id || "unknown"));
     await notifyAdmin("Erreur inattendue dans le webhook de paiement.", {
       level: "warning",
     });

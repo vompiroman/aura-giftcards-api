@@ -6,6 +6,8 @@ import { PRICES } from "../config/prices";
 import { expiresAtFromItems, slickPayPaymentState } from "../lib/payments";
 import { notifyAdmin } from "../lib/notifyAdmin";
 import { sendMetaPurchase } from "../lib/metaConversions";
+import { appendAuditLog } from "../lib/auditLog";
+import { recordPaymentFailure, resetPaymentFailure } from "../lib/paymentAlerts";
 
 const router = Router();
 
@@ -440,8 +442,9 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
     });
 
     if (!spRes.ok) {
-      const detail = await spRes.text().catch(() => "");
-      req.log?.error({ slickpayStatus: spRes.status, detail, orderId }, "Payment verification failed");
+      await spRes.text().catch(() => "");
+      req.log?.error({ slickpayStatus: spRes.status, orderId }, "Payment verification failed");
+      void recordPaymentFailure("blocked", orderId);
       res.status(502).json({ error: "La vérification du paiement est momentanément indisponible." });
       return;
     }
@@ -457,6 +460,7 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
         orderId,
         dedupeKey: `amount-${orderId}`,
       });
+      void recordPaymentFailure("blocked", orderId);
       res.status(409).json({ error: "Le montant vérifié ne correspond pas à la commande." });
       return;
     }
@@ -538,6 +542,7 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
           dedupeKey: `assignment-${orderId}`,
         },
       );
+      void recordPaymentFailure("blocked", orderId);
 
       if (waitingForStock) {
         res.json({ verified: true, payment_status: "paid", order_status: "pending", waiting_for_stock: true });
@@ -553,6 +558,13 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       return;
     }
 
+    resetPaymentFailure("blocked", orderId);
+    void appendAuditLog({
+      action: "order_activation",
+      targetType: "order",
+      targetId: orderId,
+      details: { source: "slickpay_verify" },
+    });
     res.json({ verified: true, payment_status: "paid", order_status: "active", expires_at: expiresAt });
   } catch (err) {
     req.log?.error({ err }, "Payment verification failed unexpectedly");
