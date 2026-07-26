@@ -3,6 +3,7 @@ import {
   calculatePromoDiscount,
   hashPromoCode,
   normalizePromoCode,
+  presentPromoCode,
   promoSupportsItems,
 } from "../../src/lib/promos";
 
@@ -32,5 +33,22 @@ describe("codes promo", () => {
     const promo = { discount_type: "fixed" as const, discount_value: 100, services: ["spotify"] };
     expect(promoSupportsItems(promo, [{ name: "Spotify 1 mois" }])).toBe(true);
     expect(promoSupportsItems(promo, [{ name: "Netflix 1 mois" }])).toBe(false);
+  });
+  it("présente un code masqué et un compteur sans exposer le hash ni les utilisations", () => {
+    const presented = presentPromoCode({
+      id: "11111111-1111-4111-8111-111111111111",
+      code_prefix: "AURA",
+      code_hash: "secret-hash",
+      discount_type: "percentage",
+      discount_value: 10,
+      services: ["netflix"],
+      active: true,
+      promo_redemptions: [{ count: 7, client_hash: "private" }],
+    });
+
+    expect(presented.masked_code).toBe("AURA••••");
+    expect(presented.usage_count).toBe(7);
+    expect(presented).not.toHaveProperty("code_hash");
+    expect(presented).not.toHaveProperty("promo_redemptions");
   });
 });

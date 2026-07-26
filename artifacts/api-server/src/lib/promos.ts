@@ -46,3 +46,24 @@ export function calculatePromoDiscount(subtotal: number, promo: PromoDefinition)
     : value;
   return Math.max(0, Math.min(Math.floor(raw), Math.floor(subtotal)));
 }
+
+export function presentPromoCode(row: Record<string, any>, usageCount?: number) {
+  const prefix = typeof row.code_prefix === "string" ? row.code_prefix : "";
+  const relationCount = Array.isArray(row.promo_redemptions)
+    ? Number(row.promo_redemptions[0]?.count || 0)
+    : 0;
+  return {
+    id: row.id,
+    masked_code: prefix ? `${prefix}${"•".repeat(Math.max(4, 8 - prefix.length))}` : "••••••••",
+    discount_type: row.discount_type,
+    discount_value: row.discount_value,
+    starts_at: row.starts_at,
+    ends_at: row.ends_at,
+    max_uses: row.max_uses,
+    max_uses_per_client: row.max_uses_per_client,
+    services: Array.isArray(row.services) ? row.services : [],
+    active: Boolean(row.active),
+    created_at: row.created_at,
+    usage_count: Number.isFinite(usageCount) ? Number(usageCount) : relationCount,
+  };
+}
