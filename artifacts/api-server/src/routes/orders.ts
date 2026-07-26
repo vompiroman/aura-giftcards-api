@@ -20,10 +20,12 @@ import { summarizeAvailableStock } from "../lib/stockAlerts";
 import { appendAuditLog } from "../lib/auditLog";
 import {
   calculatePromoDiscount,
+  clientPromoHash,
   hashPromoCode,
   normalizePromoCode,
   promoIsActive,
   promoSupportsItems,
+  promoUsageExhausted,
 } from "../lib/promos";
 
 const router: IRouter = Router();
@@ -114,6 +116,15 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
         .single();
       if (promoError || !candidate || !promoIsActive(candidate) || !promoSupportsItems(candidate, pricing.cleanItems)) {
         res.status(400).json({ error: "Code promo invalide ou non applicable." });
+        return;
+      }
+      const { data: usageRows, error: usageError } = await supabaseAdmin.rpc("get_promo_usage", {
+        p_promo_code_id: candidate.id,
+        p_client_hash: clientPromoHash(email),
+      });
+      const usage = Array.isArray(usageRows) ? usageRows[0] : usageRows;
+      if (usageError || promoUsageExhausted(candidate, usage)) {
+        res.status(400).json({ error: "Code promo épuisé." });
         return;
       }
       promo = candidate;

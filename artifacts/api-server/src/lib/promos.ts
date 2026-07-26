@@ -9,6 +9,8 @@ export interface PromoDefinition {
   ends_at?: string | null;
   services?: string[] | null;
   active?: boolean;
+  max_uses?: number | null;
+  max_uses_per_client?: number | null;
 }
 
 export function normalizePromoCode(value: unknown): string | null {
@@ -66,4 +68,15 @@ export function presentPromoCode(row: Record<string, any>, usageCount?: number) 
     created_at: row.created_at,
     usage_count: Number.isFinite(usageCount) ? Number(usageCount) : relationCount,
   };
+}
+
+export function promoUsageExhausted(
+  promo: Pick<PromoDefinition, "max_uses" | "max_uses_per_client"> & Record<string, any>,
+  usage: { total_uses?: number | null; client_uses?: number | null } | null | undefined,
+): boolean {
+  const total = Number(usage?.total_uses || 0);
+  const client = Number(usage?.client_uses || 0);
+  return (promo.max_uses !== null && promo.max_uses !== undefined && total >= Number(promo.max_uses))
+    || (promo.max_uses_per_client !== null && promo.max_uses_per_client !== undefined
+      && client >= Number(promo.max_uses_per_client));
 }

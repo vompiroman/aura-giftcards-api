@@ -3,7 +3,7 @@ import { requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
 import rateLimit from "express-rate-limit";
 import { supabaseAdmin, supabaseAuth } from "../lib/supabase";
 import { computeCart } from "../config/prices";
-import { calculatePromoDiscount, hashPromoCode, normalizePromoCode, presentPromoCode, promoIsActive, promoSupportsItems } from "../lib/promos";
+import { calculatePromoDiscount, clientPromoHash, hashPromoCode, normalizePromoCode, presentPromoCode, promoIsActive, promoSupportsItems, promoUsageExhausted } from "../lib/promos";
 import { appendAuditLog } from "../lib/auditLog";
 
 const router = Router();
@@ -40,6 +40,14 @@ router.post("/validate-promo", promoValidationLimiter, async (req, res) => {
     .single();
   if (error || !promo || !promoIsActive(promo) || !promoSupportsItems(promo, pricing.cleanItems)) {
     return res.status(400).json({ valid: false, error: "Code promo invalide ou non applicable." });
+  }
+  const { data: usageRows, error: usageError } = await supabaseAdmin.rpc("get_promo_usage", {
+    p_promo_code_id: promo.id,
+    p_client_hash: clientPromoHash(email),
+  });
+  const usage = Array.isArray(usageRows) ? usageRows[0] : usageRows;
+  if (usageError || promoUsageExhausted(promo, usage)) {
+    return res.status(400).json({ valid: false, error: "Code promo épuisé." });
   }
   const discount = calculatePromoDiscount(pricing.amount, promo);
   return res.json({
