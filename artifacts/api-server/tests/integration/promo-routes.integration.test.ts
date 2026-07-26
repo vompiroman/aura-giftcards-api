@@ -2,10 +2,10 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }));
+const { fromMock, rpcMock } = vi.hoisted(() => ({ fromMock: vi.fn(), rpcMock: vi.fn() }));
 
 vi.mock("../../src/lib/supabase", () => ({
-  supabaseAdmin: { from: fromMock },
+  supabaseAdmin: { from: fromMock, rpc: rpcMock },
   supabaseAuth: { auth: { getUser: vi.fn(async () => ({ data: { user: { email: "client@example.com" } }, error: null })) } },
 }));
 vi.mock("../../src/middleware/requireAdmin", () => ({
@@ -35,6 +35,8 @@ const promo = {
 describe("admin promo contract", () => {
   beforeEach(() => {
     fromMock.mockReset();
+    rpcMock.mockReset();
+    rpcMock.mockResolvedValue({ data: [{ total_uses: 0, client_uses: 0 }], error: null });
   });
 
   it("returns masked_code and usage_count without redemption details", async () => {
