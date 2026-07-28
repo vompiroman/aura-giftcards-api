@@ -12,6 +12,16 @@ export const PRICES: Record<string, number> = {
   "Crunchyroll 1 mois": 500,
   "Crunchyroll 3 mois": 1200,
   "Crunchyroll 1 an": 3000,
+  // Catalogue Aura Stream actuel (comptes/profils)
+  "Netflix Premium 1 mois": 600,
+  "Netflix Premium 3 mois": 1700,
+  "Netflix Premium 6 mois": 3200,
+  "Spotify Family 1 mois": 200,
+  "Spotify Family 3 mois": 550,
+  "Spotify Family 6 mois": 1000,
+  "Crunchyroll Mega Fan 1 mois": 500,
+  "Crunchyroll Mega Fan 3 mois": 1400,
+  "Crunchyroll Mega Fan 6 mois": 2600,
 };
 
 export interface CartItem {
