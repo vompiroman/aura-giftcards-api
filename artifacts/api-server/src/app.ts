@@ -88,9 +88,9 @@ const corsOptions: cors.CorsOptions = {
     if (allowedOrigins.has(normalized) || isLocalDevelopmentOrigin) {
       return callback(null, true);
     }
-    console.warn(`[CORS] Origine non whitelistÃƒÂ©e : ${origin} (normalisÃƒÂ©e: ${normalized})`);
+    console.warn(`[CORS] Origine non whitelistée : ${origin} (normalisée: ${normalized})`);
     if (corsSoftMode) {
-      console.warn(`[CORS] SOFT_MODE actif -> origine tolÃƒÂ©rÃƒÂ©e : ${origin}`);
+      console.warn(`[CORS] SOFT_MODE actif -> origine tolérée : ${origin}`);
       return callback(null, true);
     }
     return callback(null, false);
@@ -110,7 +110,7 @@ const globalApiLimiter = rateLimit({
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Trop de requÃƒÂªtes. RÃƒÂ©essayez dans quelques minutes." },
+  message: { error: "Trop de requêtes. Réessayez dans quelques minutes." },
 });
 
 app.use("/api", globalApiLimiter, (_req, res, next) => {

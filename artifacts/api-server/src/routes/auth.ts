@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import { supabaseAuth as supabase } from "../lib/supabase";
 import { isAdmin } from "../middleware/requireAdmin";
 import axios from "axios";
+import { appendAuditLog } from "../lib/auditLog";
 
 const router: IRouter = Router();
 
@@ -11,7 +12,7 @@ const loginLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Trop de tentatives de connexion. RÃƒÂ©essayez dans quelques minutes." },
+  message: { error: "Trop de tentatives de connexion. Réessayez dans quelques minutes." },
 });
 
 const registrationLimiter = rateLimit({
@@ -19,7 +20,7 @@ const registrationLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Trop de crÃƒÂ©ations de compte. RÃƒÂ©essayez plus tard." },
+  message: { error: "Trop de créations de compte. Réessayez plus tard." },
 });
 
 const recoveryLimiter = rateLimit({
@@ -27,7 +28,7 @@ const recoveryLimiter = rateLimit({
   max: 8,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Trop de tentatives de rÃƒÂ©cupÃƒÂ©ration. RÃƒÂ©essayez plus tard." },
+  message: { error: "Trop de tentatives de récupération. Réessayez plus tard." },
 });
 
 function normalizeEmail(value: unknown): string | null {
@@ -72,7 +73,7 @@ router.post("/register", registrationLimiter, async (req, res) => {
     const normalizedEmail = normalizeEmail(email);
 
     if (!normalizedEmail || !validPassword(password)) {
-      res.status(400).json({ error: "Adresse email ou mot de passe invalide (8 ÃƒÂ  128 caractÃƒÂ¨res)." });
+      res.status(400).json({ error: "Adresse email ou mot de passe invalide (8 à 128 caractères)." });
       return;
     }
     const safeFullName = typeof full_name === "string" ? full_name.trim().slice(0, 120) : "";
@@ -92,7 +93,7 @@ router.post("/register", registrationLimiter, async (req, res) => {
     }
 
     res.status(201).json({
-      message: "Compte crÃƒÂ©ÃƒÂ©. VÃƒÂ©rifiez votre email pour confirmer l'inscription.",
+      message: "Compte créé. Vérifiez votre email pour confirmer l'inscription.",
       user: data.user,
     });
   } catch (err) {
@@ -123,11 +124,19 @@ router.post("/login", loginLimiter, async (req, res) => {
     }
 
     res.json({
-      message: "Connexion rÃƒÂ©ussie.",
+      message: "Connexion réussie.",
       access_token: data.session?.access_token,
       expires_at: data.session?.expires_at,
       user: publicUser(data.user),
     });
+    if (isAdmin(data.user?.email, data.user?.app_metadata)) {
+      void appendAuditLog({
+        action: "admin_login",
+        actorUserId: data.user?.id,
+        targetType: "auth",
+        details: { method: "password" },
+      });
+    }
   } catch (err) {
     req.log.error({ err }, "Unexpected error in POST /login");
     res.status(500).json({ error: "Erreur interne du serveur." });
@@ -146,7 +155,7 @@ router.post("/update-profile", async (req, res) => {
     for (const [key, value] of [["first_name", first_name], ["last_name", last_name], ["phone", phone]] as const) {
       if (value !== undefined) {
         if (typeof value !== "string" || value.length > 120) {
-          res.status(400).json({ error: "DonnÃƒÂ©es de profil invalides." });
+          res.status(400).json({ error: "Données de profil invalides." });
           return;
         }
         profileData[key] = value.trim();
@@ -157,7 +166,7 @@ router.post("/update-profile", async (req, res) => {
     // If attempting to change password
     if (password !== undefined) {
       if (!validPassword(password)) {
-        res.status(400).json({ error: "Le nouveau mot de passe doit contenir 8 ÃƒÂ  128 caractÃƒÂ¨res." });
+        res.status(400).json({ error: "Le nouveau mot de passe doit contenir 8 à 128 caractères." });
         return;
       }
       if (!old_password) {
@@ -168,7 +177,7 @@ router.post("/update-profile", async (req, res) => {
       // Verify old password
       const { data: userData, error: userError } = await supabase.auth.getUser(token);
       if (userError || !userData?.user?.email) {
-        res.status(401).json({ error: "Token invalide ou expirÃƒÂ©." });
+        res.status(401).json({ error: "Token invalide ou expiré." });
         return;
       }
       
@@ -201,7 +210,7 @@ router.post("/update-profile", async (req, res) => {
       }
     });
     
-    res.json({ message: "Profil mis ÃƒÂ  jour", user: response.data });
+    res.json({ message: "Profil mis à jour", user: response.data });
   } catch (err: any) {
     req.log.error({ err }, "Unexpected error in POST /update-profile");
     if (axios.isAxiosError(err)) {
@@ -233,7 +242,7 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
       return;
     }
     
-    res.json({ message: "Si cet email existe, un lien de rÃƒÂ©initialisation a ÃƒÂ©tÃƒÂ© envoyÃƒÂ©." });
+    res.json({ message: "Si cet email existe, un lien de réinitialisation a été envoyé." });
   } catch (err) {
     req.log.error({ err }, "Unexpected error in POST /forgot-password");
     res.status(500).json({ error: "Erreur interne du serveur." });
@@ -263,7 +272,7 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
       }
     });
     
-    res.json({ message: "Mot de passe rÃƒÂ©initialisÃƒÂ© avec succÃƒÂ¨s." });
+    res.json({ message: "Mot de passe réinitialisé avec succès." });
   } catch (err: any) {
     req.log.error({ err }, "Unexpected error in POST /reset-password");
     if (axios.isAxiosError(err)) {
@@ -285,7 +294,7 @@ router.get("/me", async (req, res) => {
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     
     if (userError || !userData?.user) {
-      res.status(401).json({ error: "Token invalide ou expirÃƒÂ©." });
+      res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
 

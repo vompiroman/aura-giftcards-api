@@ -4,6 +4,9 @@ import crypto from "crypto";
 import { supabaseAdmin as supabase } from "../lib/supabase";
 import { notifyAdmin } from "../lib/notifyAdmin";
 import { sendMetaPurchase } from "../lib/metaConversions";
+import { appendAuditLog } from "../lib/auditLog";
+import { recordPaymentFailure, resetPaymentFailure } from "../lib/paymentAlerts";
+import { clientPromoHash } from "../lib/promos";
 
 const router = Router();
 
@@ -61,7 +64,8 @@ async function verifyInvoiceWithSlickPay(invoiceId: string): Promise<InvoiceVeri
     const amount = Number(amountValue);
 
     return {
-      paid: completed === 1 || completed === true || completed === "1" || ["paid", "completed", "success"].includes(status),
+      paid: completed === 1 || completed === true || completed === "1" || String(completed).toLowerCase() === "true"
+        || ["paid", "completed", "success", "successful", "true"].includes(status),
       failed: ["failed", "cancelled", "canceled"].includes(status),
       amount: Number.isFinite(amount) ? amount : null,
     };
@@ -74,13 +78,13 @@ function durationFromItems(items: any[]): number {
   let max = 1;
   for (const it of items || []) {
     const text = String(it?.name || "").toLowerCase();
-    if (text.includes("1 an") || text.includes("1 year") || text.includes("12 mois") || text.includes("Ã˜Â³Ã™â€ Ã˜Â©")) {
+    if (text.includes("1 an") || text.includes("1 year") || text.includes("12 mois") || text.includes("سنة")) {
       max = Math.max(max, 12);
     } else if (text.includes("6 mois") || text.includes("6 months")) {
       max = Math.max(max, 6);
     } else if (text.includes("3 mois") || text.includes("3 months")) {
       max = Math.max(max, 3);
-    } else if (text.includes("2 mois") || text.includes("2 months") || text.includes("Ã˜Â´Ã™â€¡Ã˜Â±Ã˜Â§Ã™â€ ")) {
+    } else if (text.includes("2 mois") || text.includes("2 months") || text.includes("شهران")) {
       max = Math.max(max, 2);
     } else {
       const m = /(\d+)\s*(mois|month|ans?|years?)/i.exec(text);
@@ -114,16 +118,24 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
 
     const invoiceId = String(req.body?.invoice_id ?? req.body?.id ?? "");
     const orderIdParam = String(req.body?.order_id ?? "");
-    const rawStatus = String(req.body?.status ?? req.body?.completed ?? "").toLowerCase();
+    const rawStatus = String(
+      req.body?.status
+      ?? req.body?.payment_status
+      ?? req.body?.completed
+      ?? req.body?.data?.status
+      ?? req.body?.data?.payment_status
+      ?? req.body?.data?.completed
+      ?? "",
+    ).toLowerCase();
     
     if (!invoiceId || invoiceId.length > 160) return res.status(400).json({ error: "invoice_id manquant" });
 
-    const isPaid = ["completed", "paid", "success", "1"].includes(rawStatus);
+    const isPaid = ["completed", "paid", "success", "successful", "1", "true"].includes(rawStatus);
     const isFailed = ["failed", "cancelled", "canceled", "0"].includes(rawStatus);
 
     const query = supabase
       .from("orders")
-      .select("order_id, assigned_email, status, payment_status, items, amount, slickpay_invoice_id")
+      .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, slickpay_invoice_id, marketing_consent, meta_purchase_sent_at")
       .eq("slickpay_invoice_id", invoiceId);
 
     const { data: order, error: fetchErr } = await query.single();
@@ -134,7 +146,7 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
     }
 
     if (orderIdParam && orderIdParam !== order.order_id) {
-      return res.status(400).json({ error: "RÃƒÂ©fÃƒÂ©rences incohÃƒÂ©rentes" });
+      return res.status(400).json({ error: "Références incohérentes" });
     }
 
     if (order.status === "active" || order.status === "completed") {
@@ -162,7 +174,7 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
         return res.status(200).json({ received: true, verified: false });
       }
       if (verified.amount !== null && Math.abs(verified.amount - Number(order.amount)) > 0.001) {
-        await notifyAdmin("Montant SlickPay diffÃƒÂ©rent du montant de commande. Activation bloquÃƒÂ©e.", {
+        await notifyAdmin("Montant SlickPay différent du montant de commande. Activation bloquée.", {
           level: "critical",
           orderId: order.order_id,
           dedupeKey: `amount-mismatch-${order.order_id}`,
@@ -170,22 +182,56 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
         return res.status(200).json({ received: true, amount_mismatch: true });
       }
 
-      // Seul ce webhook authentifiÃƒÂ© constitue une preuve de paiement.
-      const { error: paymentUpdateError } = await supabase
-        .from("orders")
-        .update({ status: "pending", payment_status: "paid" })
-        .eq("order_id", order.order_id)
-        .neq("payment_status", "paid");
+      // Seul ce webhook authentifié constitue une preuve de paiement.
+      const wasAlreadyPaid = order.payment_status === "paid";
+      const { data: paymentTransition, error: paymentUpdateError } = wasAlreadyPaid
+        ? { data: [{ order_id: order.order_id }], error: null }
+        : await supabase
+          .from("orders")
+          .update({ status: "pending", payment_status: "paid" })
+          .eq("order_id", order.order_id)
+          .eq("payment_status", "unpaid")
+          .select("order_id");
       if (paymentUpdateError) throw paymentUpdateError;
 
-      // Browser Pixel and server CAPI share this order-based event_id. Meta can
-      // therefore deduplicate the two Purchase signals safely.
-      void sendMetaPurchase({
-        orderId: order.order_id,
-        amount: Number(order.amount),
-        email: String(order.assigned_email || ""),
-        items: order.items,
-      });
+      if (!wasAlreadyPaid && !paymentTransition?.length) {
+        return res.status(200).json({ received: true, idempotent: true });
+      }
+
+      if (order.promo_code_id) {
+        const { data: reserved, error: reserveError } = await supabase.rpc("reserve_promo_redemption", {
+          p_promo_code_id: order.promo_code_id,
+          p_order_id: order.order_id,
+          p_client_hash: clientPromoHash(String(order.assigned_email || "")),
+        });
+        if (reserveError || reserved !== true) {
+          await notifyAdmin(`Paiement confirmé mais code promo indisponible pour ${order.order_id}.`, {
+            level: "critical",
+            orderId: order.order_id,
+            dedupeKey: `promo-reservation-${order.order_id}`,
+          });
+          return res.status(200).json({ received: true, needs_manual: true, promo_unavailable: true });
+        }
+      }
+
+      if (!wasAlreadyPaid && order.marketing_consent === true && !order.meta_purchase_sent_at) {
+        const metaSent = await sendMetaPurchase({
+          orderId: order.order_id,
+          amount: Number(order.amount),
+          email: String(order.assigned_email || ""),
+          items: order.items,
+        });
+        if (metaSent) {
+          const { error: metaUpdateError } = await supabase
+            .from("orders")
+            .update({ meta_purchase_sent_at: new Date().toISOString() })
+            .eq("order_id", order.order_id)
+            .is("meta_purchase_sent_at", null);
+          if (metaUpdateError) {
+            req.log?.warn({ orderId: order.order_id }, "Could not persist Meta Purchase delivery marker");
+          }
+        }
+      }
 
       const months = durationFromItems(order.items);
       const { error: rpcErr } = await supabase.rpc("assign_inventory_for_order", {
@@ -201,8 +247,8 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
 
         await notifyAdmin(
           isOutOfStock
-            ? `Client PAYÃƒâ€° mais stock ÃƒÂ©puisÃƒÂ© pour Ã‚Â« ${service} Ã‚Â». Attribution manuelle requise immÃƒÂ©diatement.`
-            : `Ãƒâ€°chec d'assignation d'inventaire (paiement pourtant confirmÃƒÂ©) : ${rpcErr.message}`,
+            ? `Client PAYÉ mais stock épuisé pour « ${service} ». Attribution manuelle requise immédiatement.`
+            : `Échec d'assignation d'inventaire (paiement pourtant confirmé) : ${rpcErr.message}`,
           {
             level: "critical",
             orderId: order.order_id,
@@ -214,12 +260,20 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
         return res.status(200).json({ received: true, needs_manual: true });
       }
 
+      resetPaymentFailure("webhook", order.order_id);
+      void appendAuditLog({
+        action: "order_activation",
+        targetType: "order",
+        targetId: order.order_id,
+        details: { source: "slickpay_webhook" },
+      });
       return res.status(200).json({ received: true, activated: true });
     }
 
     return res.status(200).json({ received: true, ignored: rawStatus });
   } catch (err) {
     console.error("Webhook payment processing failed.");
+    void recordPaymentFailure("webhook", String(req.body?.order_id || "unknown"));
     await notifyAdmin("Erreur inattendue dans le webhook de paiement.", {
       level: "warning",
     });
