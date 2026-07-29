@@ -20,6 +20,7 @@ describe("CORS production", () => {
     "https://aura-stream.com",
     "https://www.aura-stream.com",
     "https://aura-stream-deploy.vercel.app",
+    "https://aura-stream-deploy-lm5lvwhsl-vompiromans-projects.vercel.app",
   ])("autorise le frontend %s", async (origin) => {
     const response = await request(app)
       .options("/api/login")
@@ -32,10 +33,13 @@ describe("CORS production", () => {
     expect(response.headers["access-control-allow-methods"]).toContain("POST");
   });
 
-  it("ne renvoie pas d'autorisation CORS à une origine inconnue", async () => {
+  it.each([
+    "https://example.invalid",
+    "https://another-project-vompiromans-projects.vercel.app",
+  ])("ne renvoie pas d'autorisation CORS à une origine inconnue (%s)", async (origin) => {
     const response = await request(app)
       .options("/api/login")
-      .set("Origin", "https://example.invalid")
+      .set("Origin", origin)
       .set("Access-Control-Request-Method", "POST");
 
     expect(response.status).toBe(200);

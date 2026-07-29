@@ -120,7 +120,7 @@ describe("admin promo contract", () => {
     const response = await request(app)
       .post("/validate-promo")
       .set("Authorization", "Bearer valid-token")
-      .send({ code: "AURA10", items: [{ name: "Netflix 1 mois", quantity: 1 }] })
+      .send({ code: "AURA10", items: [{ name: "Netflix Premium 1 mois", quantity: 1 }] })
       .expect(200);
     expect(response.body).toMatchObject({
       valid: true,

@@ -45,7 +45,7 @@ describe("POST /api/create-order", () => {
   it("refuse une requête sans token", async () => {
     const res = await request(app)
       .post("/api/create-order")
-      .send({ items: [{ name: "Netflix 1 mois", quantity: 1 }] });
+      .send({ items: [{ name: "Netflix Premium 1 mois", quantity: 1 }] });
 
     expect(res.status).toBe(401);
     expect(fromMock).not.toHaveBeenCalled();
@@ -56,7 +56,7 @@ describe("POST /api/create-order", () => {
       .post("/api/create-order")
       .set("Authorization", `Bearer ${VALID_TOKEN}`)
       .send({
-        items: [{ name: "Netflix 1 mois", quantity: 1, price: 1 }],
+        items: [{ name: "Netflix Premium 1 mois", quantity: 1, price: 1 }],
         amount: 1,
       });
 
@@ -73,7 +73,7 @@ describe("POST /api/create-order", () => {
       .post("/api/create-order")
       .set("Authorization", `Bearer ${VALID_TOKEN}`)
       .send({
-        items: [{ name: "Spotify 1 mois", quantity: 1 }],
+        items: [{ name: "Spotify Family 1 mois", quantity: 1 }],
         marketing_consent: true,
         marketing_consent_version: "2026-07-26",
         marketing_consent_at: "2000-01-01T00:00:00.000Z",
@@ -97,7 +97,7 @@ describe("POST /api/create-order", () => {
       .post("/api/create-order")
       .set("Authorization", `Bearer ${VALID_TOKEN}`)
       .send({
-        items: [{ name: "Spotify 1 mois", quantity: 1 }],
+        items: [{ name: "Spotify Family 1 mois", quantity: 1 }],
         marketing_consent: true,
         marketing_consent_version: "ancienne-version",
       });
@@ -113,7 +113,7 @@ describe("POST /api/create-order", () => {
     const res = await request(app)
       .post("/api/create-order")
       .set("Authorization", `Bearer ${VALID_TOKEN}`)
-      .send({ items: [{ name: "Netflix 1 mois", quantity: 1 }] });
+      .send({ items: [{ name: "Netflix Premium 1 mois", quantity: 1 }] });
 
     expect(res.status).toBe(201);
     expect(builder.insert).toHaveBeenCalledWith(expect.objectContaining({
