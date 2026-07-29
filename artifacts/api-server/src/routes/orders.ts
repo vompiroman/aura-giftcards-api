@@ -137,9 +137,9 @@ router.get("/my-orders", async (req, res): Promise<any> => {
         ...o,
         items: publicOrderItems(o.items),
         waiting_for_stock:
-          o.payment_status === "paid" && o.status === "pending" && hasNetflix && !acc,
+          o.payment_status === "paid" && hasNetflix && !acc,
         account:
-          o.status === "active" && acc
+          ["active", "completed"].includes(o.status) && acc
             ? {
                 email: acc.account_email,
                 profile_name: acc.profile_name ?? null,
@@ -487,7 +487,9 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("order_id, assigned_email, status, payment_status, items").eq("order_id", order_id).single();
     if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
     if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "AccÃƒÂ¨s refusÃƒÂ©" });
-    if (order.payment_status !== "paid" || order.status === "cancelled") return res.status(409).json({ error: "Le paiement de cette commande n'est pas confirmÃƒÂ©." });
+    if (!["unpaid", "paid"].includes(order.payment_status) || order.status === "cancelled") {
+      return res.status(409).json({ error: "Cette commande ne peut plus être modifiée." });
+    }
 
     // Update items with credentials
     const items = parseOrderItems(order.items);
@@ -510,7 +512,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       .update({ items: updatedItems })
       .eq("order_id", order_id)
       .eq("assigned_email", userData.user.email)
-      .eq("payment_status", "paid")
+      .in("payment_status", ["unpaid", "paid"])
       .neq("status", "cancelled")
       .select("order_id");
     if (updateError) throw updateError;
