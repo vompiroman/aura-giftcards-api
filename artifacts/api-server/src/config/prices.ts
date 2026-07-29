@@ -1,27 +1,12 @@
 // Source de vérité UNIQUE des prix (en DA). Le client ne peut jamais l'influencer.
 // Toute route qui touche à l'argent lit depuis ici, jamais depuis req.body.
 export const PRICES: Record<string, number> = {
-  "Netflix 1 mois": 600,
-  "Netflix 2 mois": 1100,
-  "Netflix 3 mois": 4000,
-  "Netflix 6 mois": 7500,
-  "Netflix 12 mois": 14000,
-  "Spotify 1 mois": 200,
-  "Spotify 2 mois": 900,
-  "Spotify 3 mois": 2400,
-  "Crunchyroll 1 mois": 500,
-  "Crunchyroll 3 mois": 1200,
-  "Crunchyroll 1 an": 3000,
-  // Catalogue Aura Stream actuel (comptes/profils)
   "Netflix Premium 1 mois": 600,
-  "Netflix Premium 3 mois": 1700,
-  "Netflix Premium 6 mois": 3200,
-  "Spotify Family 1 mois": 200,
-  "Spotify Family 3 mois": 550,
-  "Spotify Family 6 mois": 1000,
+  "Netflix Premium 2 mois": 1100,
+  "Spotify Family 1 mois": 500,
+  "Spotify Family 1 an": 4000,
   "Crunchyroll Mega Fan 1 mois": 500,
-  "Crunchyroll Mega Fan 3 mois": 1400,
-  "Crunchyroll Mega Fan 6 mois": 2600,
+  "Crunchyroll Mega Fan 1 an": 3000,
 };
 
 export interface CartItem {

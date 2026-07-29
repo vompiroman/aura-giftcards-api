@@ -211,9 +211,9 @@ router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
         ...o,
         items: publicOrderItems(o.items),
         waiting_for_stock:
-          o.payment_status === "paid" && o.status === "pending" && hasNetflix && !acc,
+          o.payment_status === "paid" && hasNetflix && !acc,
         account:
-          o.status === "active" && acc
+          ["active", "completed"].includes(o.status) && acc
             ? {
                 email: acc.account_email,
                 profile_name: acc.profile_name ?? null,
@@ -650,7 +650,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       .update({ items: updatedItems })
       .eq("order_id", order_id)
       .eq("assigned_email", userData.user.email)
-      .eq("payment_status", "paid")
+      .in("payment_status", ["unpaid", "paid"])
       .neq("status", "cancelled")
       .select("order_id");
     if (updateError) throw updateError;
