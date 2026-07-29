@@ -48,6 +48,16 @@ function normalizeOrigin(value: string): string {
   return value.trim().replace(/\/+$/, "").toLowerCase();
 }
 
+function isAuraStreamVercelPreview(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return url.protocol === "https:"
+      && /^aura-stream-deploy(?:-[a-z0-9-]+)?-vompiromans-projects\.vercel\.app$/.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function buildAllowedOrigins(): Set<string> {
   const configured = [
     process.env.ALLOWED_ORIGINS,
@@ -85,7 +95,7 @@ const corsOptions: cors.CorsOptions = {
     } catch {
       isLocalDevelopmentOrigin = false;
     }
-    if (allowedOrigins.has(normalized) || isLocalDevelopmentOrigin) {
+    if (allowedOrigins.has(normalized) || isLocalDevelopmentOrigin || isAuraStreamVercelPreview(normalized)) {
       return callback(null, true);
     }
     console.warn(`[CORS] Origine non whitelistée : ${origin} (normalisée: ${normalized})`);
