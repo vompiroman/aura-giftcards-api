@@ -2,6 +2,7 @@
 // Toute route qui touche à l'argent lit depuis ici, jamais depuis req.body.
 export const PRICES: Record<string, number> = {
   "Netflix Premium 1 mois": 600,
+  "Netflix Premium 2 mois": 1100,
   "Spotify Family 1 mois": 500,
   "Spotify Family 1 an": 4000,
   "Crunchyroll Mega Fan 1 mois": 500,
