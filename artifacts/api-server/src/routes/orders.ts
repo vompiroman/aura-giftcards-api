@@ -650,7 +650,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       .update({ items: updatedItems })
       .eq("order_id", order_id)
       .eq("assigned_email", userData.user.email)
-      .in("payment_status", ["unpaid", "paid"])
+      .eq("payment_status", "paid")
       .neq("status", "cancelled")
       .select("order_id");
     if (updateError) throw updateError;
