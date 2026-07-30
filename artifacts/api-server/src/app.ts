@@ -66,7 +66,6 @@ function buildAllowedOrigins(): Set<string> {
     "https://www.aura-stream.com",
     "https://aura-stream-deploy.vercel.app",
     "https://aura-stream.vercel.app",
-    "https://aura-stream.netlify.app",
   ]
     .filter((v): v is string => Boolean(v))
     .flatMap((v) => v.split(","))

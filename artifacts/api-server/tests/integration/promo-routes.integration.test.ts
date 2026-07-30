@@ -6,7 +6,14 @@ const { fromMock, rpcMock } = vi.hoisted(() => ({ fromMock: vi.fn(), rpcMock: vi
 
 vi.mock("../../src/lib/supabase", () => ({
   supabaseAdmin: { from: fromMock, rpc: rpcMock },
-  supabaseAuth: { auth: { getUser: vi.fn(async () => ({ data: { user: { email: "client@example.com" } }, error: null })) } },
+  supabaseAuth: {
+    auth: {
+      getUser: vi.fn(async () => ({
+        data: { user: { email: "client@example.com" } },
+        error: null,
+      })),
+    },
+  },
 }));
 vi.mock("../../src/middleware/requireAdmin", () => ({
   requireAdmin: (req: any, _res: any, next: any) => {
@@ -30,22 +37,32 @@ const promo = {
   services: ["netflix"],
   active: true,
   created_at: "2026-07-26T00:00:00.000Z",
+  created_by: "22222222-2222-4222-8222-222222222222",
 };
 
 describe("admin promo contract", () => {
   beforeEach(() => {
     fromMock.mockReset();
     rpcMock.mockReset();
-    rpcMock.mockResolvedValue({ data: [{ total_uses: 0, client_uses: 0 }], error: null });
+    rpcMock.mockImplementation(async (name: string) => ({
+      data: name === "get_admin_promo_stats"
+        ? [{
+            promo_code_id: promo.id,
+            sales_count: 3,
+            revenue_amount: 1620,
+            gross_revenue: 1800,
+            discount_total: 180,
+            last_used_at: "2026-07-29T10:00:00.000Z",
+          }]
+        : [{ total_uses: 0, client_uses: 0 }],
+      error: null,
+    }));
   });
 
-  it("returns masked_code and usage_count without redemption details", async () => {
+  it("returns masked codes and paid-sales statistics without redemption details", async () => {
     fromMock.mockReturnValueOnce({
       select: vi.fn(() => ({
-        order: vi.fn(async () => ({
-          data: [{ ...promo, promo_redemptions: [{ count: 3, client_hash: "private" }] }],
-          error: null,
-        })),
+        order: vi.fn(async () => ({ data: [promo], error: null })),
       })),
     });
     const app = express();
@@ -56,12 +73,23 @@ describe("admin promo contract", () => {
       id: promo.id,
       masked_code: "AURA••••",
       usage_count: 3,
+      sales_count: 3,
+      revenue_amount: 1620,
+      discount_total: 180,
     });
     expect(response.body.promo_codes[0]).not.toHaveProperty("promo_redemptions");
+    expect(response.body.promo_codes[0]).not.toHaveProperty("code_hash");
   });
 
-  it("accepts the compatibility PATCH body while retaining the REST route", async () => {
+  it("validates all editable values before updating a promo", async () => {
     fromMock
+      .mockReturnValueOnce({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn(async () => ({ data: promo, error: null })),
+          })),
+        })),
+      })
       .mockReturnValueOnce({
         update: vi.fn(() => ({
           eq: vi.fn(() => ({
@@ -69,11 +97,6 @@ describe("admin promo contract", () => {
               single: vi.fn(async () => ({ data: { ...promo, active: false }, error: null })),
             })),
           })),
-        })),
-      })
-      .mockReturnValueOnce({
-        select: vi.fn(() => ({
-          eq: vi.fn(async () => ({ count: 3, error: null })),
         })),
       });
     const app = express();
@@ -87,8 +110,25 @@ describe("admin promo contract", () => {
       id: promo.id,
       active: false,
       masked_code: "AURA••••",
-      usage_count: 3,
+      sales_count: 3,
     });
+  });
+
+  it("rejects an invalid percentage update before touching the database", async () => {
+    fromMock.mockReturnValueOnce({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          single: vi.fn(async () => ({ data: promo, error: null })),
+        })),
+      })),
+    });
+    const app = express();
+    app.use(express.json(), promosRouter);
+
+    await request(app)
+      .patch(`/admin/promo-codes/${promo.id}`)
+      .send({ discount_value: 101 })
+      .expect(400);
   });
 
   it("validates a promo server-side without reserving usage", async () => {
