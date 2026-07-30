@@ -399,7 +399,7 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       return;
     }
     
-    if (!isAdmin(userData.user.email)) {
+    if (!isAdmin(userData.user.email, userData.user.app_metadata)) {
       res.status(403).json({ error: "Accès refusé. Vous n'êtes pas administrateur." });
       return;
     }
@@ -488,7 +488,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
 
-    if (!isAdmin(userData.user.email)) {
+    if (!isAdmin(userData.user.email, userData.user.app_metadata)) {
       return res.status(403).json({ error: "Accès refusé. Admin requis." });
     }
 
@@ -497,7 +497,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
     if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id)) {
       return res.status(400).json({ error: "Identifiant de commande invalide." });
     }
-    if (!['pending', 'active', 'cancelled'].includes(status)) return res.status(400).json({ error: "Statut invalide." });
+    if (!['pending', 'active', 'completed', 'cancelled'].includes(status)) return res.status(400).json({ error: "Statut invalide." });
 
     const { data: currentOrder, error: currentOrderError } = await supabaseAdmin
       .from("orders")
@@ -944,13 +944,13 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
+    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
     const { data, error } = await supabaseAdmin
       .from("inventory")
-      .select("id, service, account_email, account_password, is_used, assigned_order_id, created_at, profile_name, profile_pin")
+      .select("id, service, account_email, is_used, assigned_order_id, created_at, profile_name, profile_pin")
       .order("created_at", { ascending: false });
     if (error) throw error;
     res.json({ inventory: data || [] });
@@ -965,7 +965,7 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
+    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
@@ -1026,7 +1026,7 @@ router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
+    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
@@ -1067,7 +1067,7 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = authHeader.replace("Bearer ", "");
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || !isAdmin(userData.user.email)) {
+    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 

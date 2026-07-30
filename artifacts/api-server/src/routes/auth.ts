@@ -62,7 +62,7 @@ function publicUser(user: any) {
       phone: metadata.phone,
       cart: Array.isArray(metadata.cart) ? metadata.cart : undefined,
     },
-    is_admin: isAdmin(user.email),
+    is_admin: isAdmin(user.email, user.app_metadata),
   };
 }
 
@@ -230,7 +230,7 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
       return;
     }
     
-    const origin = (process.env.FRONTEND_URL || "https://aura-stream.netlify.app").replace(/\/$/, "");
+    const origin = (process.env.FRONTEND_URL || "https://www.aura-stream.com").replace(/\/$/, "");
     
     const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
       redirectTo: `${origin}/?type=recovery`,
