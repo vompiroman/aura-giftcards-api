@@ -11,6 +11,7 @@
     "test:e2e": "dotenv -e .env.test -- vitest run --config vitest.config.e2e.ts",
     "test:e2e:ci": "vitest run --config vitest.config.e2e.ts",
     "test:integration": "vitest run --config vitest.config.integration.ts",
+    "migrate:inventory-secrets": "node ./scripts/migrate-inventory-secrets.mjs",
     "test:all": "npm run test:integration && npm run test:e2e:ci"
   },
   "dependencies": {

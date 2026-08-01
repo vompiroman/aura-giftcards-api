@@ -1,10 +1,10 @@
-// Usage: node check-key.mjs "eyJhbGci..."
-// This ONLY decodes the JWT header to check the role - it does NOT make any API calls
+// Usage: SUPABASE_KEY_TO_CHECK="eyJhbGci..." node check-key.mjs
+// This ONLY decodes the JWT header to check the role - it does NOT make any API calls.
 
-const key = process.argv[2];
+const key = process.env.SUPABASE_KEY_TO_CHECK || process.env.SUPABASE_KEY;
 if (!key) {
-  console.log("Usage: node check-key.mjs <your-supabase-key>");
-  console.log("Paste the value of SUPABASE_KEY from your Render environment variables.");
+  console.log("Usage: SUPABASE_KEY_TO_CHECK=<your-supabase-key> node check-key.mjs");
+  console.log("Provide the key through an environment variable; never paste it into a command argument.");
   process.exit(1);
 }
 

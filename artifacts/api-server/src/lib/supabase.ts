@@ -1,15 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env["SUPABASE_URL"];
-const supabaseKey = process.env["SUPABASE_SERVICE_ROLE_KEY"] || process.env["SUPABASE_KEY"];
-const supabaseAuthKey = process.env["SUPABASE_ANON_KEY"] || supabaseKey;
-
-if (!supabaseUrl || !supabaseKey || !supabaseAuthKey) {
-  throw new Error("SUPABASE_URL and a server Supabase key are required.");
-}
+const supabaseKey = process.env["SUPABASE_SERVICE_ROLE_KEY"]
+  || process.env["SUPABASE_SECRET_KEY"]
+  || process.env["SUPABASE_KEY"];
 
 // Refuse an anon key for privileged database access. Do not swallow this check.
-function decodeRole(key: string): string | null {
+function decodeRole(key: string | undefined): string | null {
+  if (!key) return null;
   try {
     const parts = key.split(".");
   if (parts.length === 3) {
@@ -20,9 +18,23 @@ function decodeRole(key: string): string | null {
   return null;
 }
 
-const databaseRole = decodeRole(supabaseKey);
-if (databaseRole === "anon") {
-  throw new Error("SUPABASE_SERVICE_ROLE_KEY must be a service_role key, never an anon key.");
+function isPrivilegedDatabaseKey(key: string | undefined): boolean {
+  return decodeRole(key) === "service_role" || Boolean(key?.startsWith("sb_secret_"));
+}
+
+if (!isPrivilegedDatabaseKey(supabaseKey)) {
+  throw new Error("A SUPABASE_SERVICE_ROLE_KEY (or sb_secret_ key) is required for privileged database access.");
+}
+
+const configuredAuthKey = process.env["SUPABASE_ANON_KEY"] || process.env["SUPABASE_PUBLISHABLE_KEY"] || process.env["SUPABASE_KEY"];
+const authRole = decodeRole(configuredAuthKey);
+const isUsableAuthKey = authRole === "anon" || configuredAuthKey?.startsWith("sb_publishable_");
+const supabaseAuthKey = configuredAuthKey && !isPrivilegedDatabaseKey(configuredAuthKey) && isUsableAuthKey
+  ? configuredAuthKey
+  : undefined;
+
+if (!supabaseUrl || !supabaseKey || !supabaseAuthKey) {
+  throw new Error("SUPABASE_URL, a service_role database key and a non-privileged SUPABASE_ANON_KEY are required.");
 }
 
 // Client AUTH : utilisé UNIQUEMENT pour les appels d'authentification (.auth.signUp, .auth.signIn, .auth.getUser)

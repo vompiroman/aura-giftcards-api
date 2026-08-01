@@ -454,7 +454,19 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
     const paymentState = slickPayPaymentState(spData);
     const providerAmount = Number(spData?.data?.amount ?? spData?.amount);
 
-    if (Number.isFinite(providerAmount) && providerAmount !== Number(order.amount)) {
+    if (!Number.isFinite(providerAmount)) {
+      req.log?.error({ orderId }, "SlickPay response did not include a numeric amount");
+      await notifyAdmin(`Montant SlickPay absent pour la commande ${orderId}.`, {
+        level: "critical",
+        orderId,
+        dedupeKey: `amount-missing-${orderId}`,
+      });
+      void recordPaymentFailure("blocked", orderId);
+      res.status(409).json({ error: "Le montant du paiement n'a pas pu être vérifié." });
+      return;
+    }
+
+    if (providerAmount !== Number(order.amount)) {
       req.log?.error({ orderId, expected: order.amount, received: providerAmount }, "SlickPay amount mismatch");
       await notifyAdmin(`Montant SlickPay incohérent pour la commande ${orderId}.`, {
         level: "critical",

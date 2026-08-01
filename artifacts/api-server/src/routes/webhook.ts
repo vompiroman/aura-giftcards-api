@@ -173,7 +173,15 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
       if (!verified.paid) {
         return res.status(200).json({ received: true, verified: false });
       }
-      if (verified.amount !== null && Math.abs(verified.amount - Number(order.amount)) > 0.001) {
+      if (verified.amount === null) {
+        await notifyAdmin("Montant SlickPay absent de la vérification. Activation bloquée.", {
+          level: "critical",
+          orderId: order.order_id,
+          dedupeKey: `amount-missing-${order.order_id}`,
+        });
+        return res.status(200).json({ received: true, amount_unavailable: true });
+      }
+      if (Math.abs(verified.amount - Number(order.amount)) > 0.001) {
         await notifyAdmin("Montant SlickPay différent du montant de commande. Activation bloquée.", {
           level: "critical",
           orderId: order.order_id,

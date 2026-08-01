@@ -182,6 +182,26 @@ describe("POST /api/webhook", () => {
     expect(rpcMock).not.toHaveBeenCalled();
   });
 
+  it("bloque un paiement confirmé sans montant vérifiable", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ completed: 1, data: { payment_status: "paid" } }),
+    } as Response);
+
+    const res = await request(app)
+      .post("/api/webhook")
+      .set("x-webhook-secret", WEBHOOK_SECRET)
+      .send(webhookPayload("ORD-x"));
+
+    expect(res.status).toBe(200);
+    expect(res.body.amount_unavailable).toBe(true);
+    expect(rpcMock).not.toHaveBeenCalled();
+    expect(notifyAdminMock).toHaveBeenCalledWith(
+      expect.stringContaining("Montant SlickPay absent"),
+      expect.objectContaining({ level: "critical", orderId: "ORD-x" }),
+    );
+  });
+
   it("n'envoie jamais Purchase sans consentement marketing", async () => {
     rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
 
