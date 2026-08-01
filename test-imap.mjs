@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// Usage : node test-imap.mjs "monemail@outlook.fr" "mon-app-password"
-// Teste la connexion IMAP en direct et affiche l'erreur exacte de Microsoft.
+// Usage : IMAP_TEST_PASSWORD="..." node test-imap.mjs "monemail@outlook.fr"
+// Le mot de passe reste hors de l'historique et des arguments du processus.
 
 import { ImapFlow } from 'imapflow';
 
-const [, , email, password] = process.argv;
+const [, , emailArg] = process.argv;
+const email = process.env.IMAP_TEST_EMAIL || emailArg;
+const password = process.env.IMAP_TEST_PASSWORD;
 
 if (!email || !password) {
-  console.error('❌ Usage : node test-imap.mjs "email@outlook.fr" "app-password"');
+  console.error('❌ Usage : IMAP_TEST_PASSWORD="..." node test-imap.mjs "email@outlook.fr"');
   process.exit(1);
 }
 
@@ -28,7 +30,7 @@ async function testHost(host) {
     host,
     port: 993,
     secure: true,
-    tls: { rejectUnauthorized: false },
+    tls: { rejectUnauthorized: true },
     auth: { user: email, pass: password },
     logger: false,
     clientInfo: { name: 'AuraStream-Test', version: '1.0.0' },

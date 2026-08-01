@@ -18,6 +18,12 @@ import { notifyAdmin } from "../lib/notifyAdmin";
 import { notifyOperations } from "../lib/notifyOperations";
 import { summarizeAvailableStock } from "../lib/stockAlerts";
 import { appendAuditLog } from "../lib/auditLog";
+import { decryptInventorySecret, encryptInventorySecret } from "../lib/inventoryCredentials";
+import {
+  extractNetflixCode as extractTrustedNetflixCode,
+  isAuthenticNetflix as isTrustedAuthenticNetflix,
+  isNetflixSenderAddress,
+} from "../lib/netflixValidation";
 import {
   calculatePromoDiscount,
   clientPromoHash,
@@ -65,9 +71,8 @@ const credentialReadLimiter = rateLimit({
 });
 
 async function getAuthedEmail(req: Request): Promise<string | null> {
-  const h = req.headers.authorization || "";
-  if (!h.startsWith("Bearer ")) return null;
-  const token = h.slice(7).trim();
+  const h = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+  const token = /^Bearer\s+(.+)$/i.exec(h)?.[1]?.trim() || "";
   if (!token) return null;
 
   const { data, error } = await supabase.auth.getUser(token);
@@ -307,7 +312,7 @@ router.post("/cron/reminders", async (req, res): Promise<any> => {
       
     if (error) {
       req.log.error({ error }, "Error fetching expiring orders");
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: "Erreur interne du serveur." });
       return;
     }
     
@@ -391,7 +396,8 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       res.status(401).json({ error: "Token manquant" });
       return;
     }
-    const token = authHeader.replace("Bearer ", "");
+    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
+    if (!token) return res.status(401).json({ error: "Token manquant" });
 
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email) {
@@ -413,13 +419,17 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       ? req.query.status
       : null;
     const search = typeof req.query.search === "string"
-      ? req.query.search.replace(/[,%()]/g, " ").trim().slice(0, 120)
+      ? req.query.search.replace(/[^a-zA-Z0-9@._+\- ]/g, " ").trim().slice(0, 120)
       : "";
-    const service = typeof req.query.service === "string"
-      ? req.query.service.replace(/[,%()]/g, " ").trim().slice(0, 60)
-      : "";
-    const dateFrom = typeof req.query.date_from === "string" ? req.query.date_from : "";
-    const dateTo = typeof req.query.date_to === "string" ? req.query.date_to : "";
+    const requestedService = typeof req.query.service === "string" ? req.query.service.trim() : "";
+    const service = ["Netflix", "Spotify", "Crunchyroll"].includes(requestedService) ? requestedService : "";
+    const parseQueryDate = (value: unknown): string => {
+      if (typeof value !== "string" || !value.trim()) return "";
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+    };
+    const dateFrom = parseQueryDate(req.query.date_from);
+    const dateTo = parseQueryDate(req.query.date_to);
     const sort = typeof req.query.sort === "string" ? req.query.sort : "created_at_desc";
     const sortConfig: Record<string, { column: string; ascending: boolean }> = {
       created_at_desc: { column: "created_at", ascending: false },
@@ -483,7 +493,8 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = authHeader.replace("Bearer ", "");
+    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
+    if (!token) return res.status(401).json({ error: "Token manquant" });
 
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
@@ -589,7 +600,7 @@ router.get("/my-credentials", credentialReadLimiter, async (req, res): Promise<v
       return {
         assigned_order_id: c.assigned_order_id,
         account_email: c.account_email,
-        account_password: isNetflix ? null : c.account_password,
+        account_password: isNetflix ? null : decryptInventorySecret(c.account_password),
         service: c.service,
         profile_name: c.profile_name ?? null,
         profile_pin: c.profile_pin ?? null,
@@ -683,7 +694,7 @@ function resolveImapStrategy(acc: {
   const email = acc.account_email;
   const domain = (email.toLowerCase().split('@')[1] || '');
   const user = acc.imap_user || email;
-  const pass = acc.imap_password || acc.account_password || '';
+  const pass = decryptInventorySecret(acc.imap_password) || decryptInventorySecret(acc.account_password) || '';
 
   if (acc.imap_host) {
     return {
@@ -700,7 +711,7 @@ function resolveImapStrategy(acc: {
       host: 'imap.hostinger.com',
       port: 993,
       user: acc.imap_user || process.env.IMAP_ADMIN_USER || email,
-      pass: acc.imap_password || process.env.DEFAULT_IMAP_PASSWORD || process.env.IMAP_ADMIN_PASS || ''
+      pass: decryptInventorySecret(acc.imap_password) || process.env.DEFAULT_IMAP_PASSWORD || process.env.IMAP_ADMIN_PASS || ''
     };
   }
 
@@ -767,40 +778,11 @@ function recipientMatches(parsed: any, target: string): boolean {
 }
 
 function isAuthenticNetflix(parsed: any): boolean {
-  const authResults = (parsed.headers?.get?.('authentication-results') || '').toString().toLowerCase();
-  if (!authResults) return false;
-  return /dkim=pass/.test(authResults) && /netflix\.com/.test(authResults);
+  return isTrustedAuthenticNetflix(parsed);
 }
 
 function extractNetflixCode(text: string, html: string, subject?: string): { code?: string; link?: string } {
-  const lowerSubject = (subject || '').normalize('NFD').toLowerCase();
-  const forbiddenKeywords = [
-    'mot de passe',
-    'password',
-    'contraseña',
-    'reinitialis',
-    'reset',
-    'restablece',
-    'changement d\'adresse',
-    'update your email',
-    'change your email'
-  ];
-  if (forbiddenKeywords.some(kw => lowerSubject.includes(kw))) {
-    return {};
-  }
-
-  const haystack = `${text || ''}\n${html || ''}`;
-  const linkMatch = haystack.match(
-    /https?:\/\/[^\s"'<>]*netflix\.com\/[^\s"'<>]*(?:account\/travel\/verify|account\/update-primary-location|verify|nftoken|EMAIL_)[^\s"'<>]*/i
-  );
-
-  const CODE_NEAR_LABEL =
-    /(?:code|código|codice|zugangscode|verification code|code de vérification|votre code|access code|temporaire|connexion|login)\D{0,40}\b(\d{4})\b/i;
-
-  const nearMatch = haystack.match(CODE_NEAR_LABEL);
-  const code = nearMatch ? nearMatch[1] : undefined;
-
-  return { code, link: linkMatch ? linkMatch[0] : undefined };
+  return extractTrustedNetflixCode(text, html, subject);
 }
 
 const otpLimiter = rateLimit({
@@ -886,7 +868,7 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
 
         for (let attempt = 1; attempt <= 3; attempt++) {
           for await (let message of client.fetch({ since }, { envelope: true, source: true })) {
-            if (message.envelope?.from?.some((f: any) => f.address?.toLowerCase().includes('netflix'))) {
+            if (message.envelope?.from?.some((f: any) => isNetflixSenderAddress(f.address))) {
               const parsed = await simpleParser(message.source as any);
               if (targetEmail && !recipientMatches(parsed, targetEmail)) continue;
               if (!isAuthenticNetflix(parsed)) continue;
@@ -942,7 +924,8 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = authHeader.replace("Bearer ", "");
+    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
+    if (!token) return res.status(401).json({ error: "Token manquant" });
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
       return res.status(403).json({ error: "Accès refusé." });
@@ -963,7 +946,8 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = authHeader.replace("Bearer ", "");
+    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
+    if (!token) return res.status(401).json({ error: "Token manquant" });
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
       return res.status(403).json({ error: "Accès refusé." });
@@ -999,7 +983,8 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
     const cleanRows = rows.map(r => ({
       service: String(r.service).toLowerCase(),
       account_email: r.account_email,
-      account_password: r.account_password ?? null,
+      account_password: encryptInventorySecret(r.account_password),
+      imap_password: encryptInventorySecret(r.imap_password),
       profile_name: r.profile_name ?? null,
       profile_pin: r.profile_pin ?? null,
       is_used: false,
@@ -1024,7 +1009,8 @@ router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = authHeader.replace("Bearer ", "");
+    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
+    if (!token) return res.status(401).json({ error: "Token manquant" });
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
       return res.status(403).json({ error: "Accès refusé." });
@@ -1065,16 +1051,18 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = authHeader.replace("Bearer ", "");
+    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
+    if (!token) return res.status(401).json({ error: "Token manquant" });
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
-    const { account_email, account_password, profile_name, profile_pin } = req.body;
+    const { account_email, account_password, imap_password, profile_name, profile_pin } = req.body;
     const updates: any = {};
     if (account_email !== undefined) updates.account_email = account_email;
-    if (account_password !== undefined) updates.account_password = account_password;
+    if (account_password !== undefined) updates.account_password = encryptInventorySecret(account_password);
+    if (imap_password !== undefined) updates.imap_password = encryptInventorySecret(imap_password);
     if (profile_name !== undefined) updates.profile_name = profile_name;
     if (profile_pin !== undefined) updates.profile_pin = profile_pin;
 

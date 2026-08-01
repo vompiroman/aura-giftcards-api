@@ -1,24 +1,32 @@
-// Simulates the EXACT flow the frontend does: login -> add to cart -> create-order -> create-invoice
-const API_BASE = "https://aura-giftcards-api.onrender.com/api";
+// Staging-only diagnostic. Set API_BASE explicitly for a non-local environment.
+const API_BASE = (process.env.API_BASE || "http://127.0.0.1:3000/api").replace(/\/$/, "");
+const TEST_EMAIL = process.env.TEST_EMAIL;
+const TEST_PASSWORD = process.env.TEST_PASSWORD;
+const isLocal = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//i.test(`${API_BASE}/`);
+if (!isLocal && process.env.ALLOW_PRODUCTION_TESTS !== "true") {
+  throw new Error("Refusing non-local payment tests. Set ALLOW_PRODUCTION_TESTS=true only for an approved staging target.");
+}
+if (!TEST_EMAIL || !TEST_PASSWORD) {
+  throw new Error("Set TEST_EMAIL and TEST_PASSWORD through the environment; no credentials are embedded in this script.");
+}
 
 async function fullPaymentTest() {
   console.log("=== STEP 1: Login ===");
   
-  // First, register a test account (may already exist)
-  const regRes = await fetch(API_BASE + "/register", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: "testpayment@test.com", password: "Test1234!" }),
-  });
-  console.log("Register status:", regRes.status);
-  const regBody = await regRes.text();
-  console.log("Register body:", regBody.slice(0, 200));
+  if (process.env.REGISTER_TEST_ACCOUNT === "true") {
+    const regRes = await fetch(API_BASE + "/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: TEST_EMAIL, password: TEST_PASSWORD }),
+    });
+    console.log("Register status:", regRes.status);
+  }
 
   // Login
   const loginRes = await fetch(API_BASE + "/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: "testpayment@test.com", password: "Test1234!" }),
+    body: JSON.stringify({ email: TEST_EMAIL, password: TEST_PASSWORD }),
   });
   console.log("\nLogin status:", loginRes.status);
   const loginText = await loginRes.text();

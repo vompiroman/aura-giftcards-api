@@ -16,6 +16,11 @@ if (!env.SUPABASE_URL || !env.SUPABASE_KEY) {
   process.exit(1);
 }
 
+if (process.env.NODE_ENV === 'production' || process.env.ALLOW_ORDER_WIPE !== 'true' || process.env.WIPE_CONFIRM !== 'DELETE_ALL_ORDERS') {
+  console.error('Refusing destructive order wipe. Use a non-production environment with ALLOW_ORDER_WIPE=true and WIPE_CONFIRM=DELETE_ALL_ORDERS.');
+  process.exit(1);
+}
+
 const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_KEY);
 
 async function wipe() {

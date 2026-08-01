@@ -31,6 +31,14 @@ const recoveryLimiter = rateLimit({
   message: { error: "Trop de tentatives de récupération. Réessayez plus tard." },
 });
 
+const profileLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Trop de modifications de profil. Réessayez plus tard." },
+});
+
 function normalizeEmail(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const email = value.trim().toLowerCase();
@@ -39,7 +47,7 @@ function normalizeEmail(value: unknown): string | null {
 }
 
 function validPassword(value: unknown): value is string {
-  return typeof value === "string" && value.length >= 8 && value.length <= 128;
+  return typeof value === "string" && value.length >= 12 && value.length <= 128;
 }
 
 function bearerToken(req: any): string | null {
@@ -47,6 +55,21 @@ function bearerToken(req: any): string | null {
   if (!/^Bearer\s+/i.test(value)) return null;
   const token = value.replace(/^Bearer\s+/i, "").trim();
   return token || null;
+}
+
+function authApiKey(): string | null {
+  const candidate = process.env["SUPABASE_ANON_KEY"] || process.env["SUPABASE_PUBLISHABLE_KEY"] || process.env["SUPABASE_KEY"];
+  if (!candidate) return null;
+  try {
+    const parts = candidate.split(".");
+    if (parts.length === 3) {
+      const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString()) as { role?: unknown };
+      if (payload.role === "service_role") return null;
+    }
+  } catch {
+    // New publishable keys are opaque strings and are valid for the Auth API.
+  }
+  return candidate;
 }
 
 function publicUser(user: any) {
@@ -73,7 +96,7 @@ router.post("/register", registrationLimiter, async (req, res) => {
     const normalizedEmail = normalizeEmail(email);
 
     if (!normalizedEmail || !validPassword(password)) {
-      res.status(400).json({ error: "Adresse email ou mot de passe invalide (8 à 128 caractères)." });
+      res.status(400).json({ error: "Adresse email ou mot de passe invalide (12 à 128 caractères)." });
       return;
     }
     const safeFullName = typeof full_name === "string" ? full_name.trim().slice(0, 120) : "";
@@ -87,14 +110,14 @@ router.post("/register", registrationLimiter, async (req, res) => {
     });
 
     if (error) {
-      req.log.error({ error }, "Erreur Supabase signUp");
-      res.status(400).json({ error: error.message });
+      req.log.warn({ code: error.code }, "Supabase signUp rejected");
+      res.status(400).json({ error: "Impossible de créer le compte avec ces informations." });
       return;
     }
 
     res.status(201).json({
       message: "Compte créé. Vérifiez votre email pour confirmer l'inscription.",
-      user: data.user,
+      user: publicUser(data.user),
     });
   } catch (err) {
     req.log.error({ err }, "Unexpected error in POST /register");
@@ -118,8 +141,8 @@ router.post("/login", loginLimiter, async (req, res) => {
     });
 
     if (error) {
-      req.log.error({ error }, "Erreur Supabase signIn");
-      res.status(401).json({ error: error.message });
+      req.log.warn({ code: error.code }, "Supabase signIn rejected");
+      res.status(401).json({ error: "Identifiants invalides." });
       return;
     }
 
@@ -143,7 +166,7 @@ router.post("/login", loginLimiter, async (req, res) => {
   }
 });
 
-router.post("/update-profile", async (req, res) => {
+router.post("/update-profile", profileLimiter, async (req, res) => {
   try {
     const token = bearerToken(req);
     if (!token) {
@@ -166,7 +189,7 @@ router.post("/update-profile", async (req, res) => {
     // If attempting to change password
     if (password !== undefined) {
       if (!validPassword(password)) {
-        res.status(400).json({ error: "Le nouveau mot de passe doit contenir 8 à 128 caractères." });
+        res.status(400).json({ error: "Le nouveau mot de passe doit contenir 12 à 128 caractères." });
         return;
       }
       if (!old_password) {
@@ -196,7 +219,7 @@ router.post("/update-profile", async (req, res) => {
     
     // Call Supabase Auth REST API directly to bypass SDK session requirement
     const supabaseUrl = process.env["SUPABASE_URL"];
-    const supabaseKey = process.env["SUPABASE_ANON_KEY"] || process.env["SUPABASE_SERVICE_ROLE_KEY"] || process.env["SUPABASE_KEY"];
+    const supabaseKey = authApiKey();
     if (!supabaseUrl || !supabaseKey) {
       res.status(503).json({ error: "Service d'authentification indisponible." });
       return;
@@ -210,11 +233,14 @@ router.post("/update-profile", async (req, res) => {
       }
     });
     
-    res.json({ message: "Profil mis à jour", user: response.data });
+    res.json({ message: "Profil mis à jour", user: publicUser(response.data) });
   } catch (err: any) {
     req.log.error({ err }, "Unexpected error in POST /update-profile");
     if (axios.isAxiosError(err)) {
-      res.status(err.response?.status || 400).json({ error: err.response?.data?.msg || err.message });
+      const status = err.response?.status === 401 || err.response?.status === 403 ? 401 : 400;
+      res.status(status).json({
+        error: status === 401 ? "Token invalide ou expiré." : "Impossible de mettre à jour le profil.",
+      });
       return;
     }
     res.status(500).json({ error: "Erreur interne du serveur." });
@@ -237,28 +263,34 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
     });
     
     if (error) {
-      req.log.error({ error }, "Erreur Supabase resetPassword");
-      res.status(400).json({ error: error.message });
+      req.log.warn({ code: error.code }, "Supabase resetPassword rejected");
+      res.json({ message: "Si cet email existe, un lien de réinitialisation a été envoyé." });
       return;
     }
     
     res.json({ message: "Si cet email existe, un lien de réinitialisation a été envoyé." });
   } catch (err) {
-    req.log.error({ err }, "Unexpected error in POST /forgot-password");
-    res.status(500).json({ error: "Erreur interne du serveur." });
+    req.log.warn({ message: err instanceof Error ? err.message : "unknown" }, "Forgot-password request failed");
+    res.json({ message: "Si cet email existe, un lien de réinitialisation a été envoyé." });
   }
 });
 
 router.post("/reset-password", recoveryLimiter, async (req, res) => {
   try {
     const { token, password } = req.body;
-    if (typeof token !== "string" || token.length < 20 || !validPassword(password)) {
+    if (
+      typeof token !== "string"
+      || token.length < 20
+      || token.length > 4096
+      || /[\r\n]/.test(token)
+      || !validPassword(password)
+    ) {
       res.status(400).json({ error: "Token et mot de passe requis." });
       return;
     }
     
     const supabaseUrl = process.env["SUPABASE_URL"];
-    const supabaseKey = process.env["SUPABASE_ANON_KEY"] || process.env["SUPABASE_SERVICE_ROLE_KEY"] || process.env["SUPABASE_KEY"];
+    const supabaseKey = authApiKey();
     if (!supabaseUrl || !supabaseKey) {
       res.status(503).json({ error: "Service d'authentification indisponible." });
       return;
@@ -274,9 +306,9 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
     
     res.json({ message: "Mot de passe réinitialisé avec succès." });
   } catch (err: any) {
-    req.log.error({ err }, "Unexpected error in POST /reset-password");
+    req.log.warn({ message: err instanceof Error ? err.message : "unknown" }, "Reset-password request failed");
     if (axios.isAxiosError(err)) {
-      res.status(err.response?.status || 400).json({ error: err.response?.data?.msg || err.message });
+      res.status(400).json({ error: "Lien de réinitialisation invalide ou expiré." });
       return;
     }
     res.status(500).json({ error: "Erreur interne." });
