@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { resetPasswordMock, signUpMock, signInMock, getUserMock } = vi.hoisted(() => ({
+const { resetPasswordMock, signUpMock, signInMock, getUserMock, refreshSessionMock } = vi.hoisted(() => ({
   resetPasswordMock: vi.fn(),
   signUpMock: vi.fn(),
   signInMock: vi.fn(),
   getUserMock: vi.fn(),
+  refreshSessionMock: vi.fn(),
 }));
 
 vi.mock("../../src/lib/supabase", () => ({
@@ -16,6 +17,7 @@ vi.mock("../../src/lib/supabase", () => ({
       resetPasswordForEmail: resetPasswordMock,
       signUp: signUpMock,
       signInWithPassword: signInMock,
+      refreshSession: refreshSessionMock,
       getUser: getUserMock,
     },
   },
@@ -89,5 +91,48 @@ describe("sécurité de l'authentification", () => {
     });
     expect(response.body.user.aud).toBeUndefined();
     expect(response.body.user.identities).toBeUndefined();
+  });
+
+  it("renouvelle une session et effectue la rotation du refresh token", async () => {
+    refreshSessionMock.mockResolvedValue({
+      data: {
+        session: {
+          access_token: "new-access-token",
+          refresh_token: "new-refresh-token-that-is-long-enough",
+          expires_at: 1_786_200_000,
+        },
+        user: {
+          id: "admin-1",
+          email: "admin@example.com",
+          user_metadata: {},
+          app_metadata: { role: "admin" },
+        },
+      },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/api/refresh-session")
+      .send({ refresh_token: "old-refresh-token-that-is-long-enough" });
+
+    expect(response.status).toBe(200);
+    expect(refreshSessionMock).toHaveBeenCalledWith({
+      refresh_token: "old-refresh-token-that-is-long-enough",
+    });
+    expect(response.body).toMatchObject({
+      access_token: "new-access-token",
+      refresh_token: "new-refresh-token-that-is-long-enough",
+      expires_at: 1_786_200_000,
+      user: { id: "admin-1", is_admin: true },
+    });
+  });
+
+  it("rejette un refresh token invalide sans appeler Supabase", async () => {
+    const response = await request(app)
+      .post("/api/refresh-session")
+      .send({ refresh_token: "trop-court" });
+
+    expect(response.status).toBe(400);
+    expect(refreshSessionMock).not.toHaveBeenCalled();
   });
 });

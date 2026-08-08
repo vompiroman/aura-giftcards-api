@@ -39,6 +39,14 @@ const profileLimiter = rateLimit({
   message: { error: "Trop de modifications de profil. Réessayez plus tard." },
 });
 
+const refreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Trop de renouvellements de session. Réessayez dans quelques minutes." },
+});
+
 function normalizeEmail(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const email = value.trim().toLowerCase();
@@ -149,6 +157,7 @@ router.post("/login", loginLimiter, async (req, res) => {
     res.json({
       message: "Connexion réussie.",
       access_token: data.session?.access_token,
+      refresh_token: data.session?.refresh_token,
       expires_at: data.session?.expires_at,
       user: publicUser(data.user),
     });
@@ -163,6 +172,39 @@ router.post("/login", loginLimiter, async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Unexpected error in POST /login");
     res.status(500).json({ error: "Erreur interne du serveur." });
+  }
+});
+
+router.post("/refresh-session", refreshLimiter, async (req, res) => {
+  try {
+    const refreshToken = typeof req.body?.refresh_token === "string"
+      ? req.body.refresh_token.trim()
+      : "";
+    if (
+      refreshToken.length < 20
+      || refreshToken.length > 4096
+      || /[\r\n]/.test(refreshToken)
+    ) {
+      return res.status(400).json({ error: "Session invalide." });
+    }
+
+    const { data, error } = await supabase.auth.refreshSession({
+      refresh_token: refreshToken,
+    });
+    if (error || !data.session?.access_token || !data.session?.refresh_token || !data.user) {
+      req.log.warn({ code: error?.code }, "Supabase session refresh rejected");
+      return res.status(401).json({ error: "Session expirée. Reconnectez-vous." });
+    }
+
+    return res.json({
+      access_token: data.session.access_token,
+      refresh_token: data.session.refresh_token,
+      expires_at: data.session.expires_at,
+      user: publicUser(data.user),
+    });
+  } catch (err) {
+    req.log.error({ err }, "Unexpected error in POST /refresh-session");
+    return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
   }
 });
 
