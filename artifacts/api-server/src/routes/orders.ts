@@ -6,7 +6,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { computeCart } from "../config/prices";
 import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
-import { isAdmin } from "../middleware/requireAdmin";
+import { isAdmin, requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
 import {
   adminOrderItems,
   orderItemSummary,
@@ -19,6 +19,7 @@ import { notifyOperations } from "../lib/notifyOperations";
 import { summarizeAvailableStock } from "../lib/stockAlerts";
 import { appendAuditLog } from "../lib/auditLog";
 import { decryptInventorySecret, encryptInventorySecret } from "../lib/inventoryCredentials";
+import { buildAdminOrdersCsv } from "../lib/adminOrderExport";
 import {
   extractNetflixCode as extractTrustedNetflixCode,
   isAuthenticNetflix as isTrustedAuthenticNetflix,
@@ -389,6 +390,48 @@ router.post("/cron/stock-alerts", async (req, res): Promise<any> => {
   }
 });
 
+router.get("/admin/orders-export.csv", orderReadLimiter, requireAdmin, async (req: AuthedRequest, res): Promise<any> => {
+  try {
+    const orders: any[] = [];
+    const pageSize = 1000;
+    const maxRows = 10_000;
+
+    for (let offset = 0; offset < maxRows; offset += pageSize) {
+      const { data, error } = await supabaseAdmin
+        .from("orders")
+        .select("order_id, assigned_email, amount, status, payment_status, items, created_at, expires_at, activated_at")
+        .order("created_at", { ascending: false })
+        .range(offset, offset + pageSize - 1);
+      if (error) {
+        req.log?.error({ error }, "Admin Excel export query failed");
+        return res.status(503).json({ error: "L’export Excel est momentanément indisponible." });
+      }
+      const page = data || [];
+      orders.push(...page.map((order: any) => ({ ...order, items: adminOrderItems(order.items) })));
+      if (page.length < pageSize) break;
+    }
+
+    const csv = buildAdminOrdersCsv(orders);
+    const date = new Date().toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="suivi-abonnements-${date}.csv"`);
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (orders.length >= maxRows) res.setHeader("X-Export-Truncated", "true");
+
+    void appendAuditLog({
+      action: "admin_orders_export",
+      actorUserId: req.adminUserId,
+      targetType: "orders",
+      details: { rows: orders.length, format: "excel_csv" },
+    });
+    return res.send(`\uFEFF${csv}`);
+  } catch (err) {
+    req.log?.error({ err }, "Unexpected error in GET /admin/orders-export.csv");
+    return res.status(500).json({ error: "Impossible de générer l’export Excel." });
+  }
+});
+
 router.get("/admin/all-orders", async (req, res): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
@@ -414,10 +457,11 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
     const rawPageSize = Number.parseInt(String(req.query.limit || req.query.page_size || "50"), 10);
     const page = Number.isFinite(rawPage) ? Math.max(1, Math.min(rawPage, 10_000)) : 1;
     const pageSize = Number.isFinite(rawPageSize) ? Math.max(1, Math.min(rawPageSize, 100)) : 50;
-    const statusFilter = typeof req.query.status === "string"
-      && ["pending", "active", "cancelled", "completed"].includes(req.query.status)
-      ? req.query.status
+    const rawStatusFilter = typeof req.query.status === "string" ? req.query.status : "";
+    const statusFilter = ["pending", "active", "cancelled", "completed"].includes(rawStatusFilter)
+      ? rawStatusFilter
       : null;
+    const followUpFilter = ["disconnect", "expiring"].includes(rawStatusFilter) ? rawStatusFilter : null;
     const search = typeof req.query.search === "string"
       ? req.query.search.replace(/[^a-zA-Z0-9@._+\- ]/g, " ").trim().slice(0, 120)
       : "";
@@ -444,6 +488,15 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
         .select("id, order_id, assigned_email, amount, status, payment_status, items, created_at, expires_at, activated_at", { count: "exact" })
         .order(selectedSort.column, { ascending: selectedSort.ascending });
       if (statusFilter) query = query.eq("status", statusFilter);
+      if (followUpFilter) {
+        const now = new Date();
+        query = query.eq("status", "active").eq("payment_status", "paid");
+        if (followUpFilter === "disconnect") query = query.lte("expires_at", now.toISOString());
+        if (followUpFilter === "expiring") {
+          const threeDaysFromNow = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+          query = query.gt("expires_at", now.toISOString()).lte("expires_at", threeDaysFromNow.toISOString());
+        }
+      }
       if (search) query = query.or(`order_id.ilike.%${search}%,assigned_email.ilike.%${search}%`);
       // items is JSON/JSONB in existing deployments. Cast before applying
       // ilike so PostgREST does not reject a text operator on jsonb.
