@@ -19,8 +19,19 @@ const VALID_TOKEN = "valid-test-token";
 
 function orderInsertStub() {
   const builder: Record<string, any> = {};
+  builder.delete = vi.fn(() => builder);
+  builder.eq = vi.fn(() => builder);
+  builder.lt = vi.fn(async () => ({ error: null }));
   builder.insert = vi.fn(() => builder);
-  builder.select = vi.fn(async () => ({ data: [{ order_id: "ORD-test" }], error: null }));
+  builder.select = vi.fn((_columns?: string, options?: { head?: boolean }) => {
+    if (options?.head) {
+      const countBuilder: Record<string, any> = {};
+      countBuilder.eq = vi.fn(() => countBuilder);
+      countBuilder.then = (resolve: (value: unknown) => unknown) => resolve({ count: 0, error: null });
+      return countBuilder;
+    }
+    return Promise.resolve({ data: [{ order_id: "ORD-test" }], error: null });
+  });
   return builder;
 }
 

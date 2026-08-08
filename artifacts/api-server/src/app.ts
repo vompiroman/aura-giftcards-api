@@ -136,7 +136,10 @@ app.use("/api", router);
 
 app.use((err: any, req: any, res: any, next: any) => {
   if (res.headersSent) return next(err);
-  req.log?.error({ err }, "Unhandled request error");
+  req.log?.error({
+    errorName: err instanceof Error ? err.name : "unknown",
+    errorCode: typeof err?.code === "string" ? err.code : undefined,
+  }, "Unhandled request error");
   return res.status(500).json({ error: "Erreur interne du serveur." });
 });
 

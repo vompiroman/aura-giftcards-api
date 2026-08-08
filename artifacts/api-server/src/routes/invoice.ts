@@ -13,6 +13,35 @@ import { clientPromoHash } from "../lib/promos";
 const router = Router();
 
 const SLICKPAY_URL = "https://prodapi.slick-pay.com/api/v2/users/invoices";
+const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
+
+async function readBoundedProviderText(response: globalThis.Response): Promise<string> {
+  const announcedLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(announcedLength) && announcedLength > MAX_PROVIDER_RESPONSE_BYTES) {
+    throw new Error("PROVIDER_RESPONSE_TOO_LARGE");
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > MAX_PROVIDER_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("PROVIDER_RESPONSE_TOO_LARGE");
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total).toString("utf8");
+}
+
+async function readBoundedProviderJson(response: globalThis.Response): Promise<any> {
+  return JSON.parse(await readBoundedProviderText(response));
+}
 
 const invoiceLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -300,27 +329,38 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
-    let spRes: globalThis.Response;
+    let spRes!: globalThis.Response;
+    let providerBody = "";
+    let spData: any = null;
     try {
       spRes = await fetch(SLICKPAY_URL, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
+      if (spRes.ok) {
+        spData = await readBoundedProviderJson(spRes);
+      } else {
+        providerBody = await readBoundedProviderText(spRes);
+      }
     } catch (error) {
       await releaseClaim(order.order_id, claim);
-      throw error;
+      req.log?.warn({
+        orderId: order_id,
+        reason: (error as Error)?.name === "AbortError" ? "timeout" : "invalid_response",
+      }, "SlickPay invoice request failed");
+      res.status(502).json({ error: "Le prestataire de paiement est momentanément indisponible." });
+      return;
     } finally {
       clearTimeout(timeout);
     }
 
     if (!spRes.ok) {
-      const providerBody = await spRes.text().catch(() => "");
       req.log?.warn(
         {
           status: spRes.status,
@@ -334,7 +374,6 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
       return;
     }
 
-    const spData: any = await spRes.json();
     const invoiceId = spData?.data?.id ?? spData?.id;
     const paymentUrl =
       spData?.url ??
@@ -437,20 +476,45 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       return;
     }
 
-    const spRes = await fetch(`${SLICKPAY_URL}/${encodeURIComponent(order.slickpay_invoice_id)}`, {
-      method: "GET",
-      headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    let spRes!: globalThis.Response;
+    let providerBody = "";
+    let spData: any = null;
+    try {
+      spRes = await fetch(`${SLICKPAY_URL}/${encodeURIComponent(order.slickpay_invoice_id)}`, {
+        method: "GET",
+        headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      });
+      if (spRes.ok) {
+        spData = await readBoundedProviderJson(spRes);
+      } else {
+        providerBody = await readBoundedProviderText(spRes);
+      }
+    } catch (error) {
+      req.log?.error({
+        orderId,
+        reason: (error as Error)?.name === "AbortError" ? "timeout" : "invalid_response",
+      }, "Payment verification provider request failed");
+      void recordPaymentFailure("blocked", orderId);
+      res.status(502).json({ error: "La vérification du paiement est momentanément indisponible." });
+      return;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!spRes.ok) {
-      await spRes.text().catch(() => "");
-      req.log?.error({ slickpayStatus: spRes.status, orderId }, "Payment verification failed");
+      req.log?.error({
+        slickpayStatus: spRes.status,
+        orderId,
+        provider: slickPayErrorSummary(providerBody),
+      }, "Payment verification failed");
       void recordPaymentFailure("blocked", orderId);
       res.status(502).json({ error: "La vérification du paiement est momentanément indisponible." });
       return;
     }
 
-    const spData: any = await spRes.json();
     const paymentState = slickPayPaymentState(spData);
     const providerAmount = Number(spData?.data?.amount ?? spData?.amount);
 
@@ -600,7 +664,7 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
     });
     res.json({ verified: true, payment_status: "paid", order_status: "active", expires_at: expiresAt });
   } catch (err) {
-    req.log?.error({ err }, "Payment verification failed unexpectedly");
+    req.log?.error({ errorName: (err as Error)?.name }, "Payment verification failed unexpectedly");
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
 });

@@ -96,6 +96,34 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       return;
     }
 
+    const staleOrderCutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { error: cleanupError } = await supabaseAdmin
+      .from("orders")
+      .delete()
+      .eq("assigned_email", email)
+      .eq("status", "pending")
+      .eq("payment_status", "unpaid")
+      .lt("created_at", staleOrderCutoff);
+    if (cleanupError) {
+      req.log?.warn({ code: cleanupError.code }, "Unable to remove stale unpaid orders");
+    }
+
+    const { count: pendingOrderCount, error: pendingCountError } = await supabaseAdmin
+      .from("orders")
+      .select("id", { count: "exact", head: true })
+      .eq("assigned_email", email)
+      .eq("status", "pending")
+      .eq("payment_status", "unpaid");
+    if (pendingCountError) {
+      req.log?.error({ code: pendingCountError.code }, "Unable to count pending unpaid orders");
+      res.status(503).json({ error: "La création de commande est momentanément indisponible." });
+      return;
+    }
+    if ((pendingOrderCount || 0) >= 3) {
+      res.status(429).json({ error: "Trop de paiements en attente. Réessayez dans 30 minutes." });
+      return;
+    }
+
     const orderId = "ORD-" + crypto.randomUUID();
     const marketingConsent = req.body?.marketing_consent === true;
     if (
@@ -154,7 +182,11 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     }).select("order_id");
 
     if (insertError) {
-      req.log?.error({ insertError }, "Supabase error creating order");
+      if (insertError.message?.includes("PENDING_ORDER_LIMIT")) {
+        res.status(429).json({ error: "Trop de paiements en attente. Réessayez dans 30 minutes." });
+        return;
+      }
+      req.log?.error({ code: insertError.code }, "Supabase error creating order");
       res.status(500).json({ error: "Erreur lors de la création de la commande." });
       return;
     }
@@ -219,7 +251,11 @@ router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
         waiting_for_stock:
           o.payment_status === "paid" && hasNetflix && !acc,
         account:
-          ["active", "completed"].includes(o.status) && acc
+          o.status === "active"
+            && o.payment_status === "paid"
+            && typeof o.expires_at === "string"
+            && new Date(o.expires_at).getTime() > Date.now()
+            && acc
             ? {
                 email: acc.account_email,
                 profile_name: acc.profile_name ?? null,
@@ -691,7 +727,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("order_id, assigned_email, status, payment_status, items").eq("order_id", order_id).single();
     if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
     if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
-    if (order.payment_status !== "paid" || order.status === "cancelled") return res.status(409).json({ error: "Le paiement de cette commande n'est pas confirmé." });
+    if (order.payment_status !== "paid" || order.status !== "pending") return res.status(409).json({ error: "Cette activation n'est plus modifiable." });
 
     // Update items with credentials
     const items = parseOrderItems(order.items);
@@ -715,7 +751,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       .eq("order_id", order_id)
       .eq("assigned_email", userData.user.email)
       .eq("payment_status", "paid")
-      .neq("status", "cancelled")
+      .eq("status", "pending")
       .select("order_id");
     if (updateError) throw updateError;
     if (!updated?.length) return res.status(409).json({ error: "La commande n'est plus modifiable." });
@@ -823,11 +859,12 @@ function recipientMatches(parsed: any, target: string): boolean {
     const raw = parsed.headers?.get?.(key);
     if (raw) {
       const val = Array.isArray(raw) ? raw.join(' ') : String(raw);
-      if (val.toLowerCase().includes(lowerTarget)) return true;
+      const headerAddresses = val.match(/[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+/gi) || [];
+      if (headerAddresses.some((address) => address.toLowerCase() === lowerTarget)) return true;
     }
   }
 
-  return addresses.some(addr => addr.includes(lowerTarget));
+  return addresses.some(addr => addr === lowerTarget);
 }
 
 function isAuthenticNetflix(parsed: any): boolean {
@@ -918,9 +955,24 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
         let bestLink = null;
         let bestTime = 0;
         let bestUid = 0;
+        const maxMessagesPerAttempt = 20;
+        const maxMessageBytes = 256 * 1024;
 
         for (let attempt = 1; attempt <= 3; attempt++) {
-          for await (let message of client.fetch({ since }, { envelope: true, source: true })) {
+          const matchingUids = await client.search({ since }, { uid: true });
+          const newestUids = Array.isArray(matchingUids)
+            ? matchingUids.slice(-maxMessagesPerAttempt)
+            : [];
+          if (newestUids.length === 0) {
+            if (attempt < 3) await new Promise(r => setTimeout(r, 2500));
+            continue;
+          }
+          for await (let message of client.fetch(
+            newestUids,
+            { uid: true, envelope: true, size: true, source: { maxLength: maxMessageBytes } },
+            { uid: true },
+          )) {
+            if (typeof message.size === "number" && message.size > maxMessageBytes) continue;
             if (message.envelope?.from?.some((f: any) => isNetflixSenderAddress(f.address))) {
               const parsed = await simpleParser(message.source as any);
               if (targetEmail && !recipientMatches(parsed, targetEmail)) continue;

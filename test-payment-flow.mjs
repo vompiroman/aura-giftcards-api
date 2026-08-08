@@ -30,15 +30,14 @@ async function fullPaymentTest() {
   });
   console.log("\nLogin status:", loginRes.status);
   const loginText = await loginRes.text();
-  console.log("Login body:", loginText.slice(0, 300));
   
   let token;
   try {
     const loginData = JSON.parse(loginText);
-    token = loginData?.session?.access_token;
-    console.log("Token obtained:", token ? "YES (" + token.slice(0, 20) + "...)" : "NO");
+    token = loginData?.access_token;
+    console.log("Token obtained:", token ? "YES" : "NO");
     if (!token) {
-      console.log("Cannot proceed without token. Login data:", JSON.stringify(loginData, null, 2));
+      console.log("Cannot proceed without token. Error:", String(loginData?.error || "unknown").slice(0, 160));
       return;
     }
   } catch (e) {

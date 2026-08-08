@@ -19,6 +19,8 @@ describe("validation des messages Netflix", () => {
     const parsed = (value: string) => ({ headers: { get: () => value } });
     expect(isAuthenticNetflix(parsed("dkim=pass header.d=notnetflix.com"))).toBe(false);
     expect(isAuthenticNetflix(parsed("dkim=pass header.d=netflix.com"))).toBe(true);
+    expect(isAuthenticNetflix(parsed("dkim=pass; spf=pass header.d=netflix.com"))).toBe(false);
+    expect(isAuthenticNetflix(parsed("mx.google.com; dkim=pass header.d=mailer.netflix.com; spf=pass"))).toBe(true);
   });
 
   it("ne retourne que les URL HTTPS d'un hôte Netflix autorisé", () => {

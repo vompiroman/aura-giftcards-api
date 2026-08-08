@@ -1,17 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { resetPasswordMock, signUpMock, signInMock, getUserMock, refreshSessionMock } = vi.hoisted(() => ({
+const { resetPasswordMock, signUpMock, signInMock, getUserMock, refreshSessionMock, adminSignOutMock, axiosPutMock } = vi.hoisted(() => ({
   resetPasswordMock: vi.fn(),
   signUpMock: vi.fn(),
   signInMock: vi.fn(),
   getUserMock: vi.fn(),
   refreshSessionMock: vi.fn(),
+  adminSignOutMock: vi.fn(),
+  axiosPutMock: vi.fn(),
+}));
+
+vi.mock("axios", () => ({
+  default: {
+    put: axiosPutMock,
+    isAxiosError: vi.fn(() => false),
+  },
 }));
 
 vi.mock("../../src/lib/supabase", () => ({
   supabase: { auth: { getUser: getUserMock } },
-  supabaseAdmin: { auth: { getUser: getUserMock } },
+  supabaseAdmin: { auth: { getUser: getUserMock, admin: { signOut: adminSignOutMock } } },
   supabaseAuth: {
     auth: {
       resetPasswordForEmail: resetPasswordMock,
@@ -25,10 +34,17 @@ vi.mock("../../src/lib/supabase", () => ({
 
 import app from "../../src/app";
 
+function accessTokenWithAmr(method: string, timestamp = Math.floor(Date.now() / 1000)): string {
+  const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none" })}.${encode({ amr: [{ method, timestamp }] })}.signature`;
+}
+
 describe("sécurité de l'authentification", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.FRONTEND_URL = "https://www.aura-stream.com";
+    process.env.SUPABASE_URL = "https://test-project.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "sb_publishable_test_key";
   });
 
   it("ne permet pas d'énumérer les comptes via mot de passe oublié", async () => {
@@ -58,6 +74,71 @@ describe("sécurité de l'authentification", () => {
 
     expect(tooLarge.status).toBe(400);
     expect(injected.status).toBe(400);
+  });
+
+  it("rejette un jeton de session ordinaire sur la route de réinitialisation", async () => {
+    getUserMock.mockResolvedValue({
+      data: { user: { id: "user-1", email: "client@example.com" } },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/api/reset-password")
+      .send({ token: accessTokenWithAmr("password"), password: "mot-de-passe-fort-2026" });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatch(/invalide|expiré/i);
+    expect(adminSignOutMock).not.toHaveBeenCalled();
+  });
+
+  it("accepte un jeton recovery récent puis révoque toutes les sessions", async () => {
+    getUserMock.mockResolvedValue({
+      data: { user: { id: "user-1", email: "client@example.com" } },
+      error: null,
+    });
+    axiosPutMock.mockResolvedValue({ data: { id: "user-1" } });
+    adminSignOutMock.mockResolvedValue({ error: null });
+    const token = accessTokenWithAmr("recovery");
+
+    const response = await request(app)
+      .post("/api/reset-password")
+      .send({ token, password: "mot-de-passe-fort-2026" });
+
+    expect(response.status).toBe(200);
+    expect(axiosPutMock).toHaveBeenCalledWith(
+      expect.stringContaining("/auth/v1/user"),
+      { password: "mot-de-passe-fort-2026" },
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: `Bearer ${token}` }) }),
+    );
+    expect(adminSignOutMock).toHaveBeenCalledWith(token, "global");
+  });
+
+  it("rejette un jeton recovery trop ancien", async () => {
+    getUserMock.mockResolvedValue({
+      data: { user: { id: "user-1", email: "client@example.com" } },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/api/reset-password")
+      .send({
+        token: accessTokenWithAmr("recovery", Math.floor(Date.now() / 1000) - 16 * 60),
+        password: "mot-de-passe-fort-2026",
+      });
+
+    expect(response.status).toBe(400);
+    expect(axiosPutMock).not.toHaveBeenCalled();
+  });
+
+  it("révoque la session Supabase lors de la déconnexion", async () => {
+    adminSignOutMock.mockResolvedValue({ error: null });
+
+    const response = await request(app)
+      .post("/api/logout")
+      .set("Authorization", "Bearer valid-access-token");
+
+    expect(response.status).toBe(204);
+    expect(adminSignOutMock).toHaveBeenCalledWith("valid-access-token", "local");
   });
 
   it("ne renvoie pas les champs internes Supabase lors de l'inscription", async () => {
