@@ -181,7 +181,7 @@ router.post("/refresh-session", refreshLimiter, async (req, res) => {
       ? req.body.refresh_token.trim()
       : "";
     if (
-      refreshToken.length < 20
+      refreshToken.length < 8
       || refreshToken.length > 4096
       || /[\r\n]/.test(refreshToken)
     ) {
