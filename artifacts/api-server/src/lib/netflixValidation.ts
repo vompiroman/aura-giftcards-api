@@ -15,9 +15,11 @@ export function isNetflixSenderAddress(address: unknown): boolean {
 
 export function isAuthenticNetflix(parsed: any): boolean {
   const authResults = String(parsed?.headers?.get?.("authentication-results") || "").toLowerCase();
-  if (!/(?:^|[;\s])dkim\s*=\s*pass\b/i.test(authResults)) return false;
-  const domain = authResults.match(/(?:^|[;\s])(?:header\.)?d\s*=\s*([a-z0-9.-]+)/i)?.[1] || "";
-  return isAllowedNetflixHostname(domain);
+  return authResults.split(";").some((clause) => {
+    if (!/(?:^|\s)dkim\s*=\s*pass\b/i.test(clause)) return false;
+    const domain = clause.match(/(?:^|\s)(?:header\.)?d\s*=\s*([a-z0-9.-]+)/i)?.[1] || "";
+    return isAllowedNetflixHostname(domain);
+  });
 }
 
 function isApprovedNetflixUrl(value: string): boolean {

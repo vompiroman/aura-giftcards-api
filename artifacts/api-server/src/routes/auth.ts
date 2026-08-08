@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
-import { supabaseAuth as supabase } from "../lib/supabase";
+import { supabaseAdmin, supabaseAuth as supabase } from "../lib/supabase";
 import { isAdmin } from "../middleware/requireAdmin";
 import axios from "axios";
 import { appendAuditLog } from "../lib/auditLog";
@@ -63,6 +63,26 @@ function bearerToken(req: any): string | null {
   if (!/^Bearer\s+/i.test(value)) return null;
   const token = value.replace(/^Bearer\s+/i, "").trim();
   return token || null;
+}
+
+function isRecentRecoveryToken(token: string): boolean {
+  try {
+    const [, encodedPayload] = token.split(".");
+    if (!encodedPayload) return false;
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString()) as {
+      amr?: Array<{ method?: unknown; timestamp?: unknown }>;
+    };
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    return Array.isArray(payload.amr) && payload.amr.some((entry) => {
+      const timestamp = typeof entry?.timestamp === "number" ? entry.timestamp : Number.NaN;
+      return entry?.method === "recovery"
+        && Number.isFinite(timestamp)
+        && timestamp <= nowSeconds + 60
+        && nowSeconds - timestamp <= 15 * 60;
+    });
+  } catch {
+    return false;
+  }
 }
 
 function authApiKey(): string | null {
@@ -128,7 +148,7 @@ router.post("/register", registrationLimiter, async (req, res) => {
       user: publicUser(data.user),
     });
   } catch (err) {
-    req.log.error({ err }, "Unexpected error in POST /register");
+    req.log.error({ errorName: err instanceof Error ? err.name : "unknown" }, "Unexpected error in POST /register");
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
 });
@@ -170,7 +190,7 @@ router.post("/login", loginLimiter, async (req, res) => {
       });
     }
   } catch (err) {
-    req.log.error({ err }, "Unexpected error in POST /login");
+    req.log.error({ errorName: err instanceof Error ? err.name : "unknown" }, "Unexpected error in POST /login");
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
 });
@@ -203,7 +223,7 @@ router.post("/refresh-session", refreshLimiter, async (req, res) => {
       user: publicUser(data.user),
     });
   } catch (err) {
-    req.log.error({ err }, "Unexpected error in POST /refresh-session");
+    req.log.error({ errorName: err instanceof Error ? err.name : "unknown" }, "Unexpected error in POST /refresh-session");
     return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
   }
 });
@@ -277,7 +297,10 @@ router.post("/update-profile", profileLimiter, async (req, res) => {
     
     res.json({ message: "Profil mis à jour", user: publicUser(response.data) });
   } catch (err: any) {
-    req.log.error({ err }, "Unexpected error in POST /update-profile");
+    req.log.error({
+      message: err instanceof Error ? err.message : "unknown",
+      status: axios.isAxiosError(err) ? err.response?.status : undefined,
+    }, "Unexpected error in POST /update-profile");
     if (axios.isAxiosError(err)) {
       const status = err.response?.status === 401 || err.response?.status === 403 ? 401 : 400;
       res.status(status).json({
@@ -330,6 +353,12 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
       res.status(400).json({ error: "Token et mot de passe requis." });
       return;
     }
+
+    const { data: recoveryUser, error: recoveryUserError } = await supabase.auth.getUser(token);
+    if (recoveryUserError || !recoveryUser?.user || !isRecentRecoveryToken(token)) {
+      res.status(400).json({ error: "Lien de réinitialisation invalide ou expiré." });
+      return;
+    }
     
     const supabaseUrl = process.env["SUPABASE_URL"];
     const supabaseKey = authApiKey();
@@ -346,6 +375,11 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
       }
     });
     
+    const { error: revokeError } = await supabaseAdmin.auth.admin.signOut(token, "global");
+    if (revokeError) {
+      req.log.warn({ code: revokeError.code }, "Supabase session revocation failed after password reset");
+    }
+
     res.json({ message: "Mot de passe réinitialisé avec succès." });
   } catch (err: any) {
     req.log.warn({ message: err instanceof Error ? err.message : "unknown" }, "Reset-password request failed");
@@ -354,6 +388,28 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
       return;
     }
     res.status(500).json({ error: "Erreur interne." });
+  }
+});
+
+router.post("/logout", async (req, res) => {
+  try {
+    const token = bearerToken(req);
+    if (!token) {
+      res.status(401).json({ error: "Token manquant" });
+      return;
+    }
+
+    const { error } = await supabaseAdmin.auth.admin.signOut(token, "local");
+    if (error) {
+      req.log.warn({ code: error.code }, "Supabase local session revocation rejected");
+      res.status(401).json({ error: "Session invalide ou expirée." });
+      return;
+    }
+
+    res.status(204).send();
+  } catch (err) {
+    req.log.error({ message: err instanceof Error ? err.message : "unknown" }, "Unexpected error in POST /logout");
+    res.status(503).json({ error: "Déconnexion momentanément indisponible." });
   }
 });
 
@@ -374,7 +430,7 @@ router.get("/me", async (req, res) => {
 
     res.json({ user: publicUser(userData.user) });
   } catch (err) {
-    req.log.error({ err }, "Unexpected error in GET /me");
+    req.log.error({ errorName: err instanceof Error ? err.name : "unknown" }, "Unexpected error in GET /me");
     res.status(500).json({ error: "Erreur interne." });
   }
 });
