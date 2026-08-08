@@ -113,11 +113,11 @@ describe("sécurité de l'authentification", () => {
 
     const response = await request(app)
       .post("/api/refresh-session")
-      .send({ refresh_token: "old-refresh-token-that-is-long-enough" });
+      .send({ refresh_token: "123456789012" });
 
     expect(response.status).toBe(200);
     expect(refreshSessionMock).toHaveBeenCalledWith({
-      refresh_token: "old-refresh-token-that-is-long-enough",
+      refresh_token: "123456789012",
     });
     expect(response.body).toMatchObject({
       access_token: "new-access-token",
@@ -130,7 +130,7 @@ describe("sécurité de l'authentification", () => {
   it("rejette un refresh token invalide sans appeler Supabase", async () => {
     const response = await request(app)
       .post("/api/refresh-session")
-      .send({ refresh_token: "trop-court" });
+      .send({ refresh_token: "court" });
 
     expect(response.status).toBe(400);
     expect(refreshSessionMock).not.toHaveBeenCalled();
