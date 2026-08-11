@@ -201,11 +201,16 @@ describe("sécurité de l'authentification", () => {
       refresh_token: "123456789012",
     });
     expect(response.body).toMatchObject({
-      access_token: "new-access-token",
-      refresh_token: "new-refresh-token-that-is-long-enough",
+      authenticated: true,
       expires_at: 1_786_200_000,
       user: { id: "admin-1", is_admin: true },
     });
+    expect(response.body.access_token).toBeUndefined();
+    expect(response.body.refresh_token).toBeUndefined();
+    expect(response.headers["set-cookie"]).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^aura_access=/),
+      expect.stringMatching(/^aura_refresh=/),
+    ]));
   });
 
   it("rejette un refresh token invalide sans appeler Supabase", async () => {

@@ -4,6 +4,13 @@ import { supabaseAdmin, supabaseAuth as supabase } from "../lib/supabase";
 import { isAdmin } from "../middleware/requireAdmin";
 import axios from "axios";
 import { appendAuditLog } from "../lib/auditLog";
+import {
+  accessTokenFromRequest,
+  clearSessionCookies,
+  refreshTokenFromRequest,
+  rememberSessionFromRequest,
+  setSessionCookies,
+} from "../lib/sessionCookies";
 
 const router: IRouter = Router();
 
@@ -56,13 +63,6 @@ function normalizeEmail(value: unknown): string | null {
 
 function validPassword(value: unknown): value is string {
   return typeof value === "string" && value.length >= 12 && value.length <= 128;
-}
-
-function bearerToken(req: any): string | null {
-  const value = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
-  if (!/^Bearer\s+/i.test(value)) return null;
-  const token = value.replace(/^Bearer\s+/i, "").trim();
-  return token || null;
 }
 
 function isRecentRecoveryToken(token: string): boolean {
@@ -143,7 +143,11 @@ router.post("/register", registrationLimiter, async (req, res) => {
       return;
     }
 
+    if (data.session) {
+      setSessionCookies(res, data.session, false);
+    }
     res.status(201).json({
+      authenticated: Boolean(data.session),
       message: "Compte créé. Vérifiez votre email pour confirmer l'inscription.",
       user: publicUser(data.user),
     });
@@ -174,11 +178,18 @@ router.post("/login", loginLimiter, async (req, res) => {
       return;
     }
 
+    if (!data.session?.access_token || !data.session.refresh_token || !data.user) {
+      req.log.error("Supabase signIn returned no usable session");
+      res.status(503).json({ error: "Connexion momentanément indisponible." });
+      return;
+    }
+
+    setSessionCookies(res, data.session, req.body?.remember === true);
+
     res.json({
       message: "Connexion réussie.",
-      access_token: data.session?.access_token,
-      refresh_token: data.session?.refresh_token,
-      expires_at: data.session?.expires_at,
+      authenticated: true,
+      expires_at: data.session.expires_at,
       user: publicUser(data.user),
     });
     if (isAdmin(data.user?.email, data.user?.app_metadata)) {
@@ -197,9 +208,8 @@ router.post("/login", loginLimiter, async (req, res) => {
 
 router.post("/refresh-session", refreshLimiter, async (req, res) => {
   try {
-    const refreshToken = typeof req.body?.refresh_token === "string"
-      ? req.body.refresh_token.trim()
-      : "";
+    const refreshToken = refreshTokenFromRequest(req)
+      || (typeof req.body?.refresh_token === "string" ? req.body.refresh_token.trim() : "");
     if (
       refreshToken.length < 8
       || refreshToken.length > 4096
@@ -216,9 +226,13 @@ router.post("/refresh-session", refreshLimiter, async (req, res) => {
       return res.status(401).json({ error: "Session expirée. Reconnectez-vous." });
     }
 
+    setSessionCookies(
+      res,
+      data.session,
+      rememberSessionFromRequest(req) || req.body?.remember === true,
+    );
     return res.json({
-      access_token: data.session.access_token,
-      refresh_token: data.session.refresh_token,
+      authenticated: true,
       expires_at: data.session.expires_at,
       user: publicUser(data.user),
     });
@@ -230,7 +244,7 @@ router.post("/refresh-session", refreshLimiter, async (req, res) => {
 
 router.post("/update-profile", profileLimiter, async (req, res) => {
   try {
-    const token = bearerToken(req);
+    const token = accessTokenFromRequest(req);
     if (!token) {
       res.status(401).json({ error: "Token manquant" });
       return;
@@ -392,10 +406,11 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
 });
 
 router.post("/logout", async (req, res) => {
+  clearSessionCookies(res);
   try {
-    const token = bearerToken(req);
+    const token = accessTokenFromRequest(req);
     if (!token) {
-      res.status(401).json({ error: "Token manquant" });
+      res.status(204).send();
       return;
     }
 
@@ -407,6 +422,7 @@ router.post("/logout", async (req, res) => {
     }
 
     res.status(204).send();
+    return;
   } catch (err) {
     req.log.error({ message: err instanceof Error ? err.message : "unknown" }, "Unexpected error in POST /logout");
     res.status(503).json({ error: "Déconnexion momentanément indisponible." });
@@ -415,7 +431,7 @@ router.post("/logout", async (req, res) => {
 
 router.get("/me", async (req, res) => {
   try {
-    const token = bearerToken(req);
+    const token = accessTokenFromRequest(req);
     if (!token) {
       res.status(401).json({ error: "Token manquant" });
       return;
