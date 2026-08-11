@@ -1,9 +1,11 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import rateLimit from "express-rate-limit";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { attachCookieAuthorization, requestUsesAuthCookies } from "./lib/sessionCookies";
 
 const app: Express = express();
 // Trust only the configured number of reverse-proxy hops. A hard-coded trust
@@ -81,20 +83,28 @@ function buildAllowedOrigins(): Set<string> {
 const allowedOrigins = buildAllowedOrigins();
 const corsSoftMode = process.env.NODE_ENV !== "production" && process.env.CORS_SOFT_MODE === "true";
 
+function isAllowedBrowserOrigin(origin: string): boolean {
+  const normalized = normalizeOrigin(origin);
+  let isLocalDevelopmentOrigin = false;
+  try {
+    const parsed = new URL(normalized);
+    isLocalDevelopmentOrigin = process.env.NODE_ENV !== "production"
+      && parsed.protocol === "http:"
+      && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+  } catch {
+    isLocalDevelopmentOrigin = false;
+  }
+  return allowedOrigins.has(normalized)
+    || isLocalDevelopmentOrigin
+    || isAuraStreamVercelPreview(normalized)
+    || corsSoftMode;
+}
+
 const corsOptions: cors.CorsOptions = {
   origin(origin, callback) {
     if (!origin) return callback(null, true);
     const normalized = normalizeOrigin(origin);
-    let isLocalDevelopmentOrigin = false;
-    try {
-      const parsed = new URL(normalized);
-      isLocalDevelopmentOrigin = process.env.NODE_ENV !== "production"
-        && (parsed.protocol === "http:")
-        && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
-    } catch {
-      isLocalDevelopmentOrigin = false;
-    }
-    if (allowedOrigins.has(normalized) || isLocalDevelopmentOrigin || isAuraStreamVercelPreview(normalized)) {
+    if (isAllowedBrowserOrigin(origin)) {
       return callback(null, true);
     }
     console.warn(`[CORS] Origine non whitelistée : ${origin} (normalisée: ${normalized})`);
@@ -104,13 +114,27 @@ const corsOptions: cors.CorsOptions = {
     }
     return callback(null, false);
   },
-  credentials: false,
+  credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-webhook-secret", "Accept", "Origin", "X-Requested-With"],
   optionsSuccessStatus: 200,
   maxAge: 86400,
 };
 
+app.use(cookieParser());
+app.use("/api", (req, res, next) => {
+  const methodIsSafe = ["GET", "HEAD", "OPTIONS"].includes(req.method.toUpperCase());
+  const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+  if (!methodIsSafe && origin && !isAllowedBrowserOrigin(origin)) {
+    res.status(403).json({ error: "Origine non autorisée." });
+    return;
+  }
+  if (!methodIsSafe && !origin && requestUsesAuthCookies(req)) {
+    res.status(403).json({ error: "Origine requise pour cette session." });
+    return;
+  }
+  next();
+});
 app.use(cors(corsOptions));
 app.options(/(.*)/, cors(corsOptions));
 
@@ -122,12 +146,14 @@ const globalApiLimiter = rateLimit({
   message: { error: "Trop de requêtes. Réessayez dans quelques minutes." },
 });
 
-app.use("/api", globalApiLimiter, (_req, res, next) => {
+app.use("/api", globalApiLimiter, (req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Pragma", "no-cache");
   res.append("Vary", "Authorization");
   res.append("Vary", "Origin");
-  next();
+  res.append("Vary", "Cookie");
+
+  attachCookieAuthorization(req, res, next);
 });
 app.use(express.json({ limit: "64kb", strict: true }));
 app.use(express.urlencoded({ extended: false, limit: "32kb" }));
