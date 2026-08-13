@@ -174,6 +174,39 @@ describe("sécurité de l'authentification", () => {
     expect(response.body.user.identities).toBeUndefined();
   });
 
+  it("normalise le zéro national après +213 lors de l'inscription", async () => {
+    signUpMock.mockImplementation(async ({ email, options }) => ({
+      data: {
+        user: {
+          id: "user-phone",
+          email,
+          user_metadata: options.data,
+          app_metadata: {},
+        },
+        session: null,
+      },
+      error: null,
+    }));
+
+    const response = await request(app)
+      .post("/api/register")
+      .send({
+        email: "mobile@example.com",
+        password: "mot-de-passe-fort-2026",
+        first_name: "Client",
+        last_name: "Aura",
+        phone: "+213 05 57 82 88 12",
+      });
+
+    expect(response.status).toBe(201);
+    expect(signUpMock).toHaveBeenCalledWith(expect.objectContaining({
+      options: {
+        data: expect.objectContaining({ phone: "+213557828812" }),
+      },
+    }));
+    expect(response.body.user.user_metadata.phone).toBe("+213557828812");
+  });
+
   it("renouvelle une session et effectue la rotation du refresh token", async () => {
     refreshSessionMock.mockResolvedValue({
       data: {

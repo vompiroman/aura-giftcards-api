@@ -117,6 +117,19 @@ function publicUser(user: any) {
   };
 }
 
+function normalizeAlgerianMobile(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  let digits = trimmed.replace(/\D/g, "");
+  if (digits.startsWith("00213")) digits = digits.slice(5);
+  else if (digits.startsWith("213")) digits = digits.slice(3);
+  else if (digits.startsWith("0")) digits = digits.slice(1);
+  digits = digits.replace(/^0+/, "");
+
+  return /^[5-7]\d{8}$/.test(digits) ? `+213${digits}` : null;
+}
+
 
 router.post("/register", registrationLimiter, async (req, res) => {
   try {
@@ -136,8 +149,8 @@ router.post("/register", registrationLimiter, async (req, res) => {
     const safeFullName = typeof full_name === "string" ? full_name.trim().slice(0, 120) : "";
     const safeFirstName = typeof first_name === "string" ? first_name.trim().slice(0, 80) : "";
     const safeLastName = typeof last_name === "string" ? last_name.trim().slice(0, 80) : "";
-    const safePhone = typeof phone === "string" ? phone.trim().slice(0, 32) : "";
-    if (safePhone && !/^[+\d\s().-]{5,32}$/.test(safePhone)) {
+    const safePhone = typeof phone === "string" ? normalizeAlgerianMobile(phone.slice(0, 32)) : "";
+    if (safePhone === null) {
       res.status(400).json({ error: "Numéro de téléphone invalide." });
       return;
     }
@@ -275,8 +288,8 @@ router.post("/update-profile", profileLimiter, async (req, res) => {
           res.status(400).json({ error: "Données de profil invalides." });
           return;
         }
-        const normalizedValue = value.trim();
-        if (key === "phone" && normalizedValue && !/^[+\d\s().-]{5,32}$/.test(normalizedValue)) {
+        const normalizedValue = key === "phone" ? normalizeAlgerianMobile(value) : value.trim();
+        if (normalizedValue === null) {
           res.status(400).json({ error: "Numéro de téléphone invalide." });
           return;
         }
