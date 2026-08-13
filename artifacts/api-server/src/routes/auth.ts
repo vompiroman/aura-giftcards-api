@@ -120,20 +120,38 @@ function publicUser(user: any) {
 
 router.post("/register", registrationLimiter, async (req, res) => {
   try {
-    const { email, password, full_name } = req.body;
+    const { email, password, full_name, first_name, last_name, phone } = req.body;
     const normalizedEmail = normalizeEmail(email);
 
     if (!normalizedEmail || !validPassword(password)) {
       res.status(400).json({ error: "Adresse email ou mot de passe invalide (12 à 128 caractères)." });
       return;
     }
+    if (
+      [full_name, first_name, last_name, phone].some((value) => value !== undefined && typeof value !== "string")
+    ) {
+      res.status(400).json({ error: "Données de profil invalides." });
+      return;
+    }
     const safeFullName = typeof full_name === "string" ? full_name.trim().slice(0, 120) : "";
+    const safeFirstName = typeof first_name === "string" ? first_name.trim().slice(0, 80) : "";
+    const safeLastName = typeof last_name === "string" ? last_name.trim().slice(0, 80) : "";
+    const safePhone = typeof phone === "string" ? phone.trim().slice(0, 32) : "";
+    if (safePhone && !/^[+\d\s().-]{5,32}$/.test(safePhone)) {
+      res.status(400).json({ error: "Numéro de téléphone invalide." });
+      return;
+    }
 
     const { data, error } = await supabase.auth.signUp({
       email: normalizedEmail,
       password,
       options: {
-        data: { full_name: safeFullName },
+        data: {
+          full_name: safeFullName,
+          first_name: safeFirstName,
+          last_name: safeLastName,
+          phone: safePhone,
+        },
       },
     });
 
@@ -257,7 +275,12 @@ router.post("/update-profile", profileLimiter, async (req, res) => {
           res.status(400).json({ error: "Données de profil invalides." });
           return;
         }
-        profileData[key] = value.trim();
+        const normalizedValue = value.trim();
+        if (key === "phone" && normalizedValue && !/^[+\d\s().-]{5,32}$/.test(normalizedValue)) {
+          res.status(400).json({ error: "Numéro de téléphone invalide." });
+          return;
+        }
+        profileData[key] = normalizedValue;
       }
     }
     const updates: any = { data: profileData };
