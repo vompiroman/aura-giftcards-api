@@ -518,7 +518,7 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       amount_asc: { column: "amount", ascending: true },
     };
     const selectedSort = sortConfig[sort] || sortConfig.created_at_desc;
-    const buildOrdersQuery = (applyServiceFilter: boolean) => {
+    const buildOrdersQuery = () => {
       let query = supabaseAdmin
         .from("orders")
         .select("id, order_id, assigned_email, amount, status, payment_status, items, created_at, expires_at, activated_at", { count: "exact" })
@@ -534,32 +534,35 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
         }
       }
       if (search) query = query.or(`order_id.ilike.%${search}%,assigned_email.ilike.%${search}%`);
-      // items is JSON/JSONB in existing deployments. Cast before applying
-      // ilike so PostgREST does not reject a text operator on jsonb.
-      if (applyServiceFilter && service) query = query.filter("items::text", "ilike", `%${service}%`);
       if (dateFrom) query = query.gte("created_at", dateFrom);
       if (dateTo) query = query.lte("created_at", dateTo);
       return query;
     };
 
     const offset = (page - 1) * pageSize;
-    let { data, error, count } = await buildOrdersQuery(Boolean(service)).range(offset, offset + pageSize - 1);
-
-    // Older PostgREST versions may not allow a cast in a filter expression.
-    // Fall back to a bounded, controlled in-memory JSON filter rather than
-    // returning a provider error (500) to the admin UI.
-    if (error && service) {
-      const fallback = await buildOrdersQuery(false).range(0, 9_999);
-      if (!fallback.error) {
-        const filtered = (fallback.data || []).filter((order: any) =>
+    let data: any[] | null = null;
+    let error: any = null;
+    let count: number | null = 0;
+    if (service) {
+      // Partial text matching inside a JSON/JSONB array is not expressed
+      // reliably through the Data API. Apply every safe database filter first,
+      // then inspect a bounded administrator-only result set before paginating.
+      const serviceResult = await buildOrdersQuery().range(0, 9_999);
+      error = serviceResult.error;
+      if (!error) {
+        const filtered = (serviceResult.data || []).filter((order: any) =>
           parseOrderItems(order.items).some((item: any) =>
             String(item?.name || item?.service || "").toLowerCase().includes(service.toLowerCase()),
           ),
         );
         data = filtered.slice(offset, offset + pageSize);
         count = filtered.length;
-        error = null;
       }
+    } else {
+      const result = await buildOrdersQuery().range(offset, offset + pageSize - 1);
+      data = result.data;
+      error = result.error;
+      count = result.count;
     }
 
     if (error) {
