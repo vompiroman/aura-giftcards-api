@@ -108,18 +108,6 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       return;
     }
 
-    const staleOrderCutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-    const { error: cleanupError } = await supabaseAdmin
-      .from("orders")
-      .delete()
-      .eq("assigned_email", email)
-      .eq("status", "pending")
-      .eq("payment_status", "unpaid")
-      .lt("created_at", staleOrderCutoff);
-    if (cleanupError) {
-      req.log?.warn({ code: cleanupError.code }, "Unable to remove stale unpaid orders");
-    }
-
     const { count: pendingOrderCount, error: pendingCountError } = await supabaseAdmin
       .from("orders")
       .select("id", { count: "exact", head: true })
