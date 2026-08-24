@@ -58,6 +58,16 @@ describe("sécurité de l'authentification", () => {
     process.env.SUPABASE_ANON_KEY = "sb_publishable_test_key";
   });
 
+  it("renvoie une erreur client claire pour un corps JSON mal formé", async () => {
+    const response = await request(app)
+      .post("/api/login")
+      .set("Content-Type", "application/json")
+      .send('{"email":"client@example.com"');
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: "Corps JSON invalide." });
+  });
+
   it("ne permet pas d'énumérer les comptes via mot de passe oublié", async () => {
     generateLinkMock
       .mockResolvedValueOnce({

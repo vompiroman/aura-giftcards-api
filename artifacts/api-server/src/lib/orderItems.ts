@@ -99,6 +99,44 @@ export function setClientCredentials(
   });
 }
 
+/**
+ * Removes client secrets as soon as the manual activation is completed while
+ * preserving a non-sensitive audit marker. This makes the UI promise that
+ * temporary credentials are deleted after activation true at the data layer.
+ */
+export function clearClientCredentials(itemsValue: unknown, deletedAt = new Date().toISOString()): any[] {
+  return parseOrderItems(itemsValue).map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const name = String(item?.name || item?.service || "").toLowerCase();
+    if (!name.includes("spotify") && !name.includes("crunchyroll")) return item;
+    const {
+      client_credentials: _legacy,
+      client_credentials_encrypted: _encrypted,
+      ...safeItem
+    } = item;
+    return {
+      ...safeItem,
+      client_credentials_submitted: true,
+      client_credentials_deleted_at: deletedAt,
+    };
+  });
+}
+
+export function paidOrderAccessAvailable(
+  order: { payment_status?: unknown; status?: unknown; expires_at?: unknown },
+  now = Date.now(),
+): boolean {
+  if (order.payment_status !== "paid" || ["completed", "cancelled"].includes(String(order.status))) {
+    return false;
+  }
+  if (order.expires_at === null || order.expires_at === undefined || order.expires_at === "") {
+    return true;
+  }
+  if (typeof order.expires_at !== "string") return false;
+  const expiresAtMs = new Date(order.expires_at).getTime();
+  return Number.isFinite(expiresAtMs) && expiresAtMs > now;
+}
+
 export function publicOrderItems(itemsValue: unknown): any[] {
   return parseOrderItems(itemsValue).map((item) => {
     if (!item || typeof item !== "object") return item;
@@ -129,7 +167,9 @@ export function adminOrderItems(itemsValue: unknown): any[] {
     );
     return {
       ...safeItem,
-      client_credentials_submitted: Boolean(credentials),
+      client_credentials_submitted: Boolean(
+        safeItem.client_credentials_submitted || credentials,
+      ),
       client_credentials: credentials || undefined,
     };
   });

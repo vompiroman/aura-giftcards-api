@@ -10,8 +10,10 @@ import { isAdmin, requireAdmin, type AuthedRequest } from "../middleware/require
 import {
   adminOrderItems,
   customerWhatsappFromItems,
+  clearClientCredentials,
   manualActivationReady,
   orderItemSummary,
+  paidOrderAccessAvailable,
   parseOrderItems,
   publicOrderItems,
   setClientCredentials,
@@ -234,36 +236,40 @@ router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
     const orderIds = orders.map((o: any) => o.order_id || o.id).filter(Boolean);
     const { data: accounts } = await supabaseAdmin
       .from("inventory")
-      .select("assigned_order_id, account_email, profile_name, profile_pin, service")
+      .select("id, assigned_order_id, account_email, profile_name, profile_pin, service")
       .in("assigned_order_id", orderIds);
 
-    const accountByOrderId = new Map(
-      (accounts || []).map((a: any) => [a.assigned_order_id, a])
-    );
+    const accountsByOrderId = new Map<string, any[]>();
+    for (const account of accounts || []) {
+      const orderId = String(account.assigned_order_id || "");
+      if (!orderId) continue;
+      accountsByOrderId.set(orderId, [...(accountsByOrderId.get(orderId) || []), account]);
+    }
 
     const enrichedOrders = orders.map((o: any) => {
-      const acc = accountByOrderId.get(o.order_id) || accountByOrderId.get(o.id);
-      const hasNetflix = publicOrderItems(o.items).some((item: any) =>
-        String(item?.name || item?.service || "").toLowerCase().includes("netflix")
-      );
+      const assignedAccounts = accountsByOrderId.get(o.order_id) || accountsByOrderId.get(o.id) || [];
+      const netflixQuantity = publicOrderItems(o.items).reduce((total: number, item: any) => {
+        const name = String(item?.name || item?.service || "").toLowerCase();
+        return total + (name.includes("netflix") ? Math.max(1, Number(item?.quantity) || 1) : 0);
+      }, 0);
+      const accessAvailable = paidOrderAccessAvailable(o);
+      const publicAccounts = accessAvailable
+        ? assignedAccounts.map((acc: any) => ({
+            id: String(acc.id),
+            email: acc.account_email,
+            profile_name: acc.profile_name ?? null,
+            profile_pin: acc.profile_pin ?? null,
+            service: acc.service,
+          }))
+        : [];
       return {
         ...o,
         items: publicOrderItems(o.items),
         waiting_for_stock:
-          o.payment_status === "paid" && hasNetflix && !acc,
-        account:
-          o.status === "active"
-            && o.payment_status === "paid"
-            && typeof o.expires_at === "string"
-            && new Date(o.expires_at).getTime() > Date.now()
-            && acc
-            ? {
-                email: acc.account_email,
-                profile_name: acc.profile_name ?? null,
-                profile_pin: acc.profile_pin ?? null,
-                service: acc.service,
-              }
-            : null,
+          o.status === "pending" && o.payment_status === "paid" && netflixQuantity > assignedAccounts.length,
+        accounts: publicAccounts,
+        // Kept for compatibility with clients deployed before multi-profile support.
+        account: publicAccounts[0] || null,
       };
     });
 
@@ -275,12 +281,6 @@ router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
 });
-
-function escapeHtml(input: string): string {
-  return String(input).replace(/[&<>"'/]/g, (c) => (
-    { '&': '&', '<': '<', '>': '>', '"': '"', "'": '&#39;', '/': '&#x2F;' }[c] as string
-  ));
-}
 
 router.get("/validate-order", orderReadLimiter, async (req, res): Promise<any> => {
   try {
@@ -668,6 +668,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
     if (status === "active") {
       update.activated_at = currentOrder.activated_at || new Date().toISOString();
       update.expires_at = currentOrder.expires_at || expiresAtFromItems(parseOrderItems(currentOrder.items));
+      update.items = clearClientCredentials(currentOrder.items, new Date().toISOString());
       update.completed_at = null;
     }
     if (status === "completed") update.completed_at = new Date().toISOString();
@@ -809,7 +810,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     const frontendUrl = (process.env.FRONTEND_URL || "https://aura-stream.netlify.app").replace(/\/$/, "");
     const validationLink = `${frontendUrl}/?admin=true`;
     await notifyOperations(
-      `Nouveau compte ${normalizedService} à activer. Les identifiants client sont disponibles uniquement dans le panneau sécurisé : ${validationLink}`,
+      `Nouveau compte ${normalizedService} à activer. Les identifiants temporaires sont disponibles dans ce canal opérationnel privé et dans le panneau sécurisé : ${validationLink}`,
       {
         orderId: order_id,
         service: normalizedService,
@@ -939,8 +940,11 @@ const otpLimiter = rateLimit({
 });
 
 router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, res): Promise<any> => {
-  const { order_id } = req.body;
+  const { order_id, inventory_id } = req.body;
   if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id)) return res.status(400).json({ error: "Identifiant de commande invalide." });
+  if (inventory_id !== undefined && (typeof inventory_id !== "string" || !/^[A-Za-z0-9-]{1,80}$/.test(inventory_id))) {
+    return res.status(400).json({ error: "Identifiant de profil invalide." });
+  }
 
   const authHeader = req.headers.authorization;
   if (!authHeader || !/^Bearer\s+/i.test(authHeader)) return res.status(401).json({ error: "Token manquant" });
@@ -954,16 +958,18 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
     return res.status(404).json({ error: "Commande introuvable" });
   }
 
-  if (order.status !== "active" || order.payment_status !== "paid" || !order.expires_at || new Date(order.expires_at).getTime() <= Date.now()) {
+  if (!paidOrderAccessAvailable(order)) {
     return res.status(409).json({ error: "Cette commande n'est pas active ou son paiement n'est pas confirmé." });
   }
 
-  const { data: invItems, error: invError } = await supabaseAdmin
+  let inventoryQuery = supabaseAdmin
     .from("inventory")
     .select("id, account_email, account_password, imap_host, imap_port, imap_user, imap_password, service")
     .eq("assigned_order_id", order_id)
     .eq("is_used", true)
     .ilike("service", "%netflix%");
+  if (inventory_id) inventoryQuery = inventoryQuery.eq("id", inventory_id);
+  const { data: invItems, error: invError } = await inventoryQuery;
 
   if (invError) return res.status(500).json({ error: "Erreur serveur" });
 
