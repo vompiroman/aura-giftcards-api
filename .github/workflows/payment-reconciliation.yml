@@ -1,0 +1,34 @@
+name: Payment reconciliation
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payment-reconciliation-production
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    env:
+      API_ORIGIN: ${{ secrets.PRODUCTION_API_ORIGIN }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+    steps:
+      - name: Reconcile recent SlickPay invoices
+        shell: bash
+        run: |
+          if [ -z "$API_ORIGIN" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::Configure PRODUCTION_API_ORIGIN and CRON_SECRET."
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error \
+            --retry 2 \
+            --retry-all-errors \
+            --request POST \
+            --header "x-cron-secret: ${CRON_SECRET}" \
+            "${API_ORIGIN%/}/api/cron/reconcile-payments"

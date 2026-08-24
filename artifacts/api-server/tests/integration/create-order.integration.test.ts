@@ -100,6 +100,24 @@ describe("POST /api/create-order", () => {
     expect(inserted.marketing_consent_at).not.toBe("2000-01-01T00:00:00.000Z");
   });
 
+  it("normalise et enregistre le WhatsApp sur la commande", async () => {
+    const builder = orderInsertStub();
+    fromMock.mockReturnValue(builder);
+
+    const res = await request(app)
+      .post("/api/create-order")
+      .set("Authorization", `Bearer ${VALID_TOKEN}`)
+      .send({
+        items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
+        customer_whatsapp: "+213 05 55 00 00 00",
+      });
+
+    expect(res.status).toBe(201);
+    expect(builder.insert).toHaveBeenCalledWith(expect.objectContaining({
+      customer_whatsapp: "+213555000000",
+    }));
+  });
+
   it("rejette une version de consentement inconnue", async () => {
     const builder = orderInsertStub();
     fromMock.mockReturnValue(builder);

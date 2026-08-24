@@ -90,7 +90,16 @@ describe("notifications administrateur", () => {
       expect.objectContaining({ orderId: "ORD-spotify-1", service: "spotify" }),
     );
     expect(notifyAdminMock).not.toHaveBeenCalled();
-    expect(JSON.stringify(notifyOperationsMock.mock.calls)).not.toContain("secret");
+    expect(notifyOperationsMock).toHaveBeenCalledWith(
+      expect.stringContaining("panneau sécurisé"),
+      expect.objectContaining({
+        credentials: {
+          email: "spotify@example.com",
+          password: "secret",
+          whatsapp: "+213555000000",
+        },
+      }),
+    );
   });
 
   it("envoie les rappels d'expiration via notifyAdmin", async () => {

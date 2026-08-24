@@ -135,6 +135,23 @@ export function adminOrderItems(itemsValue: unknown): any[] {
   });
 }
 
+export function customerWhatsappFromItems(itemsValue: unknown): string | null {
+  for (const item of adminOrderItems(itemsValue)) {
+    const whatsapp = item?.client_credentials?.whatsapp;
+    if (typeof whatsapp === "string" && whatsapp.trim()) return whatsapp.trim();
+  }
+  return null;
+}
+
+export function manualActivationReady(itemsValue: unknown): boolean {
+  return publicOrderItems(itemsValue)
+    .filter((item) => {
+      const name = String(item?.name || item?.service || "").toLowerCase();
+      return name.includes("spotify") || name.includes("crunchyroll");
+    })
+    .every((item) => item.client_credentials_submitted === true);
+}
+
 export function orderItemSummary(itemsValue: unknown): string {
   return publicOrderItems(itemsValue)
     .map((item) => {

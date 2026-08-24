@@ -3,17 +3,23 @@ import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 import { supabaseAuth, supabaseAdmin as supabase } from "../lib/supabase";
 import { PRICES } from "../config/prices";
-import { expiresAtFromItems, slickPayPaymentState } from "../lib/payments";
 import { notifyAdmin } from "../lib/notifyAdmin";
-import { sendMetaPurchase } from "../lib/metaConversions";
-import { appendAuditLog } from "../lib/auditLog";
-import { recordPaymentFailure, resetPaymentFailure } from "../lib/paymentAlerts";
-import { clientPromoHash } from "../lib/promos";
+import { recordPaymentFailure } from "../lib/paymentAlerts";
+import { fetchSlickPayInvoice } from "../lib/slickpay";
+import { fulfillVerifiedPayment, type PayableOrder } from "../lib/paymentFulfillment";
 
 const router = Router();
 
 const SLICKPAY_URL = "https://prodapi.slick-pay.com/api/v2/users/invoices";
 const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
+
+function validCronSecret(received: string | undefined): boolean {
+  const expected = process.env.CRON_SECRET || "";
+  if (!received || !expected) return false;
+  const a = Buffer.from(received);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 async function readBoundedProviderText(response: globalThis.Response): Promise<string> {
   const announcedLength = Number(response.headers.get("content-length"));
@@ -470,28 +476,9 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       return;
     }
 
-    const apiKey = process.env.SLICKPAY_PUBLIC_KEY || process.env.SLICKPAY_API_KEY || "";
-    if (!apiKey) {
-      res.status(500).json({ error: "Configuration de paiement incomplète." });
-      return;
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-    let spRes!: globalThis.Response;
-    let providerBody = "";
-    let spData: any = null;
+    let provider;
     try {
-      spRes = await fetch(`${SLICKPAY_URL}/${encodeURIComponent(order.slickpay_invoice_id)}`, {
-        method: "GET",
-        headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
-        signal: controller.signal,
-      });
-      if (spRes.ok) {
-        spData = await readBoundedProviderJson(spRes);
-      } else {
-        providerBody = await readBoundedProviderText(spRes);
-      }
+      provider = await fetchSlickPayInvoice(order.slickpay_invoice_id, 15_000);
     } catch (error) {
       req.log?.error({
         orderId,
@@ -500,25 +487,12 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       void recordPaymentFailure("blocked", orderId);
       res.status(502).json({ error: "La vérification du paiement est momentanément indisponible." });
       return;
-    } finally {
-      clearTimeout(timeout);
     }
 
-    if (!spRes.ok) {
-      req.log?.error({
-        slickpayStatus: spRes.status,
-        orderId,
-        provider: slickPayErrorSummary(providerBody),
-      }, "Payment verification failed");
-      void recordPaymentFailure("blocked", orderId);
-      res.status(502).json({ error: "La vérification du paiement est momentanément indisponible." });
-      return;
-    }
+    const paymentState = provider.state;
+    const providerAmount = provider.amount;
 
-    const paymentState = slickPayPaymentState(spData);
-    const providerAmount = Number(spData?.data?.amount ?? spData?.amount);
-
-    if (!Number.isFinite(providerAmount)) {
+    if (providerAmount === null) {
       req.log?.error({ orderId }, "SlickPay response did not include a numeric amount");
       await notifyAdmin(`Montant SlickPay absent pour la commande ${orderId}.`, {
         level: "critical",
@@ -530,7 +504,7 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       return;
     }
 
-    if (providerAmount !== Number(order.amount)) {
+    if (Math.abs(providerAmount - Number(order.amount)) > 0.001) {
       req.log?.error({ orderId, expected: order.amount, received: providerAmount }, "SlickPay amount mismatch");
       await notifyAdmin(`Montant SlickPay incohérent pour la commande ${orderId}.`, {
         level: "critical",
@@ -558,115 +532,59 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       return;
     }
 
-    const wasAlreadyPaid = order.payment_status === "paid";
-    const { data: paymentTransition, error: paidUpdateError } = wasAlreadyPaid
-      ? { data: [{ order_id: orderId }], error: null }
-      : await supabase
-        .from("orders")
-        .update({ payment_status: "paid" })
-        .eq("order_id", orderId)
-        .eq("status", "pending")
-        .eq("payment_status", "unpaid")
-        .select("order_id");
-
-    if (paidUpdateError) {
-      req.log?.error({ paidUpdateError, orderId }, "Could not persist verified payment");
-      res.status(500).json({ error: "Paiement confirmé mais enregistrement impossible. Le support a été alerté." });
-      return;
-    }
-
-    if (!wasAlreadyPaid && !paymentTransition?.length) {
-      res.json({
-        verified: true,
-        payment_status: "paid",
-        order_status: order.status,
-        idempotent: true,
-      });
-      return;
-    }
-
-    if (order.promo_code_id) {
-      const { data: reserved, error: reserveError } = await supabase.rpc("reserve_promo_redemption", {
-        p_promo_code_id: order.promo_code_id,
-        p_order_id: orderId,
-        p_client_hash: clientPromoHash(String(order.assigned_email || "")),
-      });
-      if (reserveError || reserved !== true) {
-        await notifyAdmin(`Paiement confirmé mais code promo indisponible pour ${orderId}.`, {
-          level: "critical",
-          orderId,
-          dedupeKey: `promo-reservation-${orderId}`,
-        });
-        res.status(409).json({ verified: true, payment_status: "paid", order_status: "pending", promo_unavailable: true });
-        return;
-      }
-    }
-
-    if (!wasAlreadyPaid && order.marketing_consent === true && !order.meta_purchase_sent_at) {
-      const metaSent = await sendMetaPurchase({
-        orderId,
-        amount: Number(order.amount),
-        email: String(order.assigned_email || ""),
-        items: order.items,
-      });
-      if (metaSent) {
-        const { error: metaUpdateError } = await supabase
-          .from("orders")
-          .update({ meta_purchase_sent_at: new Date().toISOString() })
-          .eq("order_id", orderId)
-          .is("meta_purchase_sent_at", null);
-        if (metaUpdateError) {
-          req.log?.warn({ orderId }, "Could not persist Meta Purchase delivery marker");
-        }
-      }
-    }
-
-    const expiresAt = expiresAtFromItems(order.items);
-    const { error: assignmentError } = await supabase.rpc("assign_inventory_for_order", {
-      p_order_id: orderId,
-      p_expires_at: expiresAt,
-    });
-
-    if (assignmentError) {
-      const waitingForStock = assignmentError.message?.includes("OUT_OF_STOCK");
-      await notifyAdmin(
-        waitingForStock
-          ? `Paiement confirmé mais stock épuisé pour la commande ${orderId}.`
-          : `Paiement confirmé mais attribution impossible pour ${orderId}: ${assignmentError.message}`,
-        {
-          level: waitingForStock ? "critical" : "warning",
-          orderId,
-          dedupeKey: `assignment-${orderId}`,
-        },
-      );
-      void recordPaymentFailure("blocked", orderId);
-
-      if (waitingForStock) {
-        res.json({ verified: true, payment_status: "paid", order_status: "pending", waiting_for_stock: true });
-        return;
-      }
-
-      res.status(502).json({
-        verified: true,
-        payment_status: "paid",
-        order_status: "pending",
-        error: "Paiement confirmé. L'attribution sera finalisée par le support.",
-      });
-      return;
-    }
-
-    resetPaymentFailure("blocked", orderId);
-    void appendAuditLog({
-      action: "order_activation",
-      targetType: "order",
-      targetId: orderId,
-      details: { source: "slickpay_verify" },
-    });
-    res.json({ verified: true, payment_status: "paid", order_status: "active", expires_at: expiresAt });
+    const result = await fulfillVerifiedPayment(order, "slickpay_return");
+    res.json({ verified: true, ...result });
   } catch (err) {
     req.log?.error({ errorName: (err as Error)?.name }, "Payment verification failed unexpectedly");
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
+});
+
+router.post("/cron/reconcile-payments", async (req, res): Promise<any> => {
+  if (!process.env.CRON_SECRET) return res.status(503).json({ error: "CRON_SECRET non configuré." });
+  if (!validCronSecret(req.get("x-cron-secret"))) return res.status(401).json({ error: "Non autorisé" });
+
+  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: orders, error } = await supabase
+    .from("orders")
+    .select("order_id, assigned_email, amount, status, payment_status, promo_code_id, slickpay_invoice_id, items, marketing_consent, meta_purchase_sent_at")
+    .in("status", ["pending", "cancelled"])
+    .in("payment_status", ["unpaid", "failed"])
+    .not("slickpay_invoice_id", "is", null)
+    .gte("created_at", cutoff)
+    .order("created_at", { ascending: true })
+    .limit(100);
+  if (error) {
+    req.log?.error({ code: error.code }, "Payment reconciliation query failed");
+    return res.status(503).json({ error: "Réconciliation indisponible." });
+  }
+
+  const summary = { checked: 0, confirmed: 0, pending: 0, errors: 0 };
+  for (const order of orders || []) {
+    summary.checked += 1;
+    try {
+      const provider = await fetchSlickPayInvoice(String(order.slickpay_invoice_id), 10_000);
+      if (provider.state !== "paid") {
+        summary.pending += 1;
+        continue;
+      }
+      if (provider.amount === null || Math.abs(provider.amount - Number(order.amount)) > 0.001) {
+        summary.errors += 1;
+        await notifyAdmin("Paiement SlickPay détecté mais montant absent ou incohérent pendant le rattrapage.", {
+          level: "critical",
+          orderId: order.order_id,
+          dedupeKey: `reconcile-amount-${order.order_id}`,
+        });
+        continue;
+      }
+      await fulfillVerifiedPayment(order as PayableOrder, "slickpay_reconcile");
+      summary.confirmed += 1;
+    } catch (reconcileError) {
+      summary.errors += 1;
+      req.log?.warn({ orderId: order.order_id, errorName: (reconcileError as Error)?.name }, "Payment reconciliation item failed");
+    }
+  }
+  return res.json(summary);
 });
 
 export default router;
