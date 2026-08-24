@@ -75,11 +75,15 @@ Après le passage d'une commande à `paid`, le serveur envoie un e-mail de confi
 
 | Variable | Description |
 |---|---|
-| `RESEND_API_KEY` | Clé API Resend du domaine vérifié (secret) |
-| `TRANSACTIONAL_FROM_EMAIL` | Adresse professionnelle expéditrice, par exemple `support@aura-stream.com` |
+| `RESEND_API_KEY` | Clé API Resend du domaine vérifié (secret, optionnelle si SMTP est configuré) |
+| `SMTP_HOST` | Serveur SMTP, par exemple `smtp.hostinger.com` |
+| `SMTP_PORT` | `465` pour SSL ou `587` pour STARTTLS |
+| `SMTP_USER` | Adresse complète de la boîte mail professionnelle |
+| `SMTP_PASSWORD` | Mot de passe de la boîte mail (secret). Les anciens secrets `IMAP_ADMIN_PASS` et `OUTLOOK_PASSWORD` restent acceptés comme alias de migration. |
+| `TRANSACTIONAL_FROM_EMAIL` | Adresse professionnelle expéditrice, par exemple `admin@aura-stream.com` |
 | `TRANSACTIONAL_FROM_NAME` | Nom affiché, par défaut `Aura Stream` |
 | `TRANSACTIONAL_REPLY_TO` | Adresse professionnelle qui reçoit les réponses (optionnelle) |
 
-La même clé Resend peut servir de mot de passe SMTP dans Supabase Auth pour que les e-mails de récupération de mot de passe utilisent également le domaine professionnel. Les identifiants d'activation Spotify/Crunchyroll ne sont jamais inclus dans l'e-mail ni dans la facture.
+Resend est prioritaire lorsqu'une clé est présente ; sinon le serveur utilise SMTP. Le même transport envoie les confirmations d'achat et les liens de récupération générés côté serveur par Supabase Admin. Les identifiants d'activation Spotify/Crunchyroll ne sont jamais inclus dans l'e-mail ni dans la facture.
 
-Pour le projet Supabase hébergé, copie le contenu de `supabase/templates/recovery.html` dans **Authentication → Email Templates → Reset password** et utilise le sujet `Réinitialise ton mot de passe Aura Stream`. Le modèle conserve les variables officielles `{{ .ConfirmationURL }}` et `{{ .Email }}`. Le fichier est versionné afin que toute modification future puisse être relue et testée avant d'être copiée dans le Dashboard.
+Le modèle `supabase/templates/recovery.html` reste versionné comme solution de repli si l'envoi est un jour redirigé vers le SMTP natif de Supabase.

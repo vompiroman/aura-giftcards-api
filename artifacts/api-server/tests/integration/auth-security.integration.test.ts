@@ -1,14 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { resetPasswordMock, signUpMock, signInMock, getUserMock, refreshSessionMock, adminSignOutMock, axiosPutMock } = vi.hoisted(() => ({
-  resetPasswordMock: vi.fn(),
+const { generateLinkMock, sendRecoveryEmailMock, signUpMock, signInMock, getUserMock, refreshSessionMock, adminSignOutMock, axiosPutMock } = vi.hoisted(() => ({
+  generateLinkMock: vi.fn(),
+  sendRecoveryEmailMock: vi.fn(),
   signUpMock: vi.fn(),
   signInMock: vi.fn(),
   getUserMock: vi.fn(),
   refreshSessionMock: vi.fn(),
   adminSignOutMock: vi.fn(),
   axiosPutMock: vi.fn(),
+}));
+
+vi.mock("../../src/lib/purchaseEmail", () => ({
+  getPurchaseEmailConfig: vi.fn(() => ({
+    provider: "resend",
+    apiKey: "re_test",
+    fromEmail: "admin@aura-stream.com",
+    fromName: "Aura Stream",
+  })),
+  sendPasswordRecoveryEmail: sendRecoveryEmailMock,
+  sendPurchaseConfirmationEmail: vi.fn(),
 }));
 
 vi.mock("axios", () => ({
@@ -20,10 +32,9 @@ vi.mock("axios", () => ({
 
 vi.mock("../../src/lib/supabase", () => ({
   supabase: { auth: { getUser: getUserMock } },
-  supabaseAdmin: { auth: { getUser: getUserMock, admin: { signOut: adminSignOutMock } } },
+  supabaseAdmin: { auth: { getUser: getUserMock, admin: { signOut: adminSignOutMock, generateLink: generateLinkMock } } },
   supabaseAuth: {
     auth: {
-      resetPasswordForEmail: resetPasswordMock,
       signUp: signUpMock,
       signInWithPassword: signInMock,
       refreshSession: refreshSessionMock,
@@ -48,9 +59,13 @@ describe("sécurité de l'authentification", () => {
   });
 
   it("ne permet pas d'énumérer les comptes via mot de passe oublié", async () => {
-    resetPasswordMock
-      .mockResolvedValueOnce({ error: null })
-      .mockResolvedValueOnce({ error: { code: "user_not_found", message: "Unknown user" } });
+    generateLinkMock
+      .mockResolvedValueOnce({
+        data: { properties: { action_link: "https://test-project.supabase.co/auth/v1/verify?token=one&type=recovery" } },
+        error: null,
+      })
+      .mockResolvedValueOnce({ data: null, error: { code: "user_not_found", message: "Unknown user" } });
+    sendRecoveryEmailMock.mockResolvedValue({ providerId: "message-1" });
 
     const existing = await request(app)
       .post("/api/forgot-password")
@@ -62,6 +77,12 @@ describe("sécurité de l'authentification", () => {
     expect(existing.status).toBe(200);
     expect(missing.status).toBe(200);
     expect(missing.body).toEqual(existing.body);
+    expect(sendRecoveryEmailMock).toHaveBeenCalledTimes(1);
+    expect(sendRecoveryEmailMock).toHaveBeenCalledWith(
+      "client@example.com",
+      expect.stringContaining("type=recovery"),
+      expect.objectContaining({ fromEmail: "admin@aura-stream.com" }),
+    );
   });
 
   it("rejette les jetons de récupération trop grands ou contenant un retour à la ligne", async () => {

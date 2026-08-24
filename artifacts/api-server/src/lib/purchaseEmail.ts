@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import nodemailer from "nodemailer";
 import { PRICES } from "../config/prices";
 import { publicOrderItems } from "./orderItems";
 import { buildInvoicePdf, invoiceFilename, type InvoiceOrder } from "./invoicePdf";
@@ -6,15 +7,40 @@ import { buildInvoicePdf, invoiceFilename, type InvoiceOrder } from "./invoicePd
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
-export interface PurchaseEmailConfig {
-  apiKey: string;
+interface EmailIdentity {
   fromEmail: string;
   fromName: string;
   replyTo?: string;
 }
 
+export interface ResendEmailConfig extends EmailIdentity {
+  provider: "resend";
+  apiKey: string;
+}
+
+export interface SmtpEmailConfig extends EmailIdentity {
+  provider: "smtp";
+  host: string;
+  port: 465 | 587;
+  secure: boolean;
+  user: string;
+  password: string;
+}
+
+export type PurchaseEmailConfig = ResendEmailConfig | SmtpEmailConfig;
+
 export interface PurchaseEmailResult {
   providerId: string;
+}
+
+interface TransactionalMessage {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  idempotencyKey: string;
+  tag: string;
+  attachments?: Array<{ filename: string; content: Buffer }>;
 }
 
 function validEmail(value: string): boolean {
@@ -45,8 +71,32 @@ export function getPurchaseEmailConfig(): PurchaseEmailConfig | null {
   const fromEmail = String(process.env.TRANSACTIONAL_FROM_EMAIL || "").trim().toLowerCase();
   const fromName = cleanHeader(process.env.TRANSACTIONAL_FROM_NAME || "Aura Stream", 80);
   const replyTo = String(process.env.TRANSACTIONAL_REPLY_TO || "").trim().toLowerCase();
-  if (!apiKey || !validEmail(fromEmail) || !fromName || (replyTo && !validEmail(replyTo))) return null;
-  return { apiKey, fromEmail, fromName, replyTo: replyTo || undefined };
+  if (!validEmail(fromEmail) || !fromName || (replyTo && !validEmail(replyTo))) return null;
+
+  if (apiKey) {
+    return { provider: "resend", apiKey, fromEmail, fromName, replyTo: replyTo || undefined };
+  }
+
+  const host = String(process.env.SMTP_HOST || "").trim().toLowerCase();
+  const port = Number(process.env.SMTP_PORT || 465);
+  const user = String(process.env.SMTP_USER || fromEmail).trim().toLowerCase();
+  // OUTLOOK_PASSWORD is kept as a backwards-compatible alias for the mailbox
+  // secret that already exists on Render. The value is never logged or returned.
+  const password = String(
+    process.env.SMTP_PASSWORD || process.env.IMAP_ADMIN_PASS || process.env.OUTLOOK_PASSWORD || "",
+  ).trim();
+  if (!host || (port !== 465 && port !== 587) || !validEmail(user) || !password) return null;
+  return {
+    provider: "smtp",
+    host,
+    port,
+    secure: port === 465,
+    user,
+    password,
+    fromEmail,
+    fromName,
+    replyTo: replyTo || undefined,
+  };
 }
 
 function emailItems(order: InvoiceOrder): Array<{ name: string; quantity: number; total: number }> {
@@ -123,14 +173,49 @@ async function limitedResponseJson(response: Response): Promise<any> {
   try { return JSON.parse(body); } catch { return {}; }
 }
 
-export async function sendPurchaseConfirmationEmail(
-  order: InvoiceOrder,
+async function sendTransactionalMessage(
   config: PurchaseEmailConfig,
+  message: TransactionalMessage,
 ): Promise<PurchaseEmailResult> {
-  if (!validEmail(order.customer_email)) throw Object.assign(new Error("INVALID_CUSTOMER_EMAIL"), { code: "INVALID_CUSTOMER_EMAIL" });
-  const pdf = buildInvoicePdf(order);
-  const content = buildPurchaseEmailContent(order);
-  const idempotencyKey = `purchase-${crypto.createHash("sha256").update(order.job_order_id).digest("hex").slice(0, 40)}`;
+  if (!validEmail(message.to)) {
+    throw Object.assign(new Error("INVALID_CUSTOMER_EMAIL"), { code: "INVALID_CUSTOMER_EMAIL" });
+  }
+
+  if (config.provider === "smtp") {
+    const transport = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      auth: { user: config.user, pass: config.password },
+      connectionTimeout: 12_000,
+      greetingTimeout: 8_000,
+      socketTimeout: 15_000,
+      disableFileAccess: true,
+      disableUrlAccess: true,
+    });
+    try {
+      const result = await transport.sendMail({
+        from: `${config.fromName} <${config.fromEmail}>`,
+        to: message.to,
+        replyTo: config.replyTo,
+        subject: message.subject,
+        html: message.html,
+        text: message.text,
+        attachments: message.attachments,
+        messageId: `<${message.idempotencyKey}@aura-stream.com>`,
+        headers: { "X-Aura-Category": cleanHeader(message.tag, 80) },
+      });
+      return { providerId: String(result.messageId || message.idempotencyKey).slice(0, 200) };
+    } catch (error) {
+      const code = typeof (error as { code?: unknown })?.code === "string"
+        ? `SMTP_${String((error as { code: string }).code).replace(/[^A-Z0-9_-]/gi, "_").slice(0, 60)}`
+        : "SMTP_SEND_FAILED";
+      throw Object.assign(new Error(code), { code });
+    } finally {
+      transport.close();
+    }
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12_000);
   try {
@@ -139,17 +224,20 @@ export async function sendPurchaseConfirmationEmail(
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
         "Content-Type": "application/json",
-        "Idempotency-Key": idempotencyKey,
+        "Idempotency-Key": message.idempotencyKey,
       },
       body: JSON.stringify({
         from: `${config.fromName} <${config.fromEmail}>`,
-        to: [order.customer_email],
+        to: [message.to],
         reply_to: config.replyTo,
-        subject: content.subject,
-        html: content.html,
-        text: content.text,
-        attachments: [{ filename: invoiceFilename(order.job_order_id), content: pdf.toString("base64") }],
-        tags: [{ name: "category", value: "purchase-confirmation" }],
+        subject: message.subject,
+        html: message.html,
+        text: message.text,
+        attachments: message.attachments?.map((attachment) => ({
+          filename: attachment.filename,
+          content: attachment.content.toString("base64"),
+        })),
+        tags: [{ name: "category", value: message.tag }],
       }),
       signal: controller.signal,
     });
@@ -160,9 +248,76 @@ export async function sendPurchaseConfirmationEmail(
     }
     return { providerId: data.id.slice(0, 200) };
   } catch (error) {
-    if ((error as Error)?.name === "AbortError") throw Object.assign(new Error("RESEND_TIMEOUT"), { code: "RESEND_TIMEOUT" });
+    if ((error as Error)?.name === "AbortError") {
+      throw Object.assign(new Error("RESEND_TIMEOUT"), { code: "RESEND_TIMEOUT" });
+    }
     throw error;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function recoveryLink(value: string): string {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:") throw new Error("invalid protocol");
+    return parsed.toString();
+  } catch {
+    throw Object.assign(new Error("INVALID_RECOVERY_LINK"), { code: "INVALID_RECOVERY_LINK" });
+  }
+}
+
+export async function sendPasswordRecoveryEmail(
+  email: string,
+  actionLink: string,
+  config: PurchaseEmailConfig,
+): Promise<PurchaseEmailResult> {
+  const link = recoveryLink(actionLink);
+  const escapedLink = escapeHtml(link);
+  const subject = "Réinitialisez votre mot de passe Aura Stream";
+  const html = `<!doctype html>
+<html lang="fr"><body style="margin:0;background:#f6f2ec;color:#23242a;font-family:Arial,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Votre lien sécurisé de réinitialisation Aura Stream.</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f6f2ec;padding:24px 12px;"><tr><td align="center">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e0d7ce;border-radius:18px;overflow:hidden;">
+      <tr><td style="background:#23242a;padding:30px 34px;border-bottom:5px solid #d93646;"><div style="color:#f6f2ec;font-size:22px;font-weight:800;">Aura <span style="color:#d93646;">Stream</span></div></td></tr>
+      <tr><td style="padding:34px;">
+        <div style="color:#d93646;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;">Sécurité du compte</div>
+        <h1 style="margin:12px 0 14px;color:#23242a;font-size:27px;line-height:1.2;">Nouveau mot de passe</h1>
+        <p style="margin:0 0 24px;color:#62636a;font-size:15px;line-height:1.65;">Une demande de réinitialisation a été reçue pour votre compte. Utilisez le bouton ci-dessous pour choisir un nouveau mot de passe.</p>
+        <p style="margin:0 0 26px;"><a href="${escapedLink}" style="display:inline-block;background:#d93646;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;padding:14px 22px;border-radius:10px;">Réinitialiser mon mot de passe</a></p>
+        <p style="margin:0;color:#77747a;font-size:13px;line-height:1.6;">Si vous n’êtes pas à l’origine de cette demande, ignorez cet e-mail. Votre mot de passe actuel ne sera pas modifié.</p>
+      </td></tr>
+      <tr><td style="padding:20px 34px;background:#23242a;color:#c9c4bd;font-size:12px;text-align:center;">Aura Stream · Assistance sécurisée</td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`;
+  const text = `Réinitialisez votre mot de passe Aura Stream\n\nOuvrez ce lien sécurisé : ${link}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.`;
+  const idempotencyKey = `recovery-${crypto.createHash("sha256").update(`${email}:${link}`).digest("hex").slice(0, 40)}`;
+  return sendTransactionalMessage(config, {
+    to: email,
+    subject,
+    html,
+    text,
+    idempotencyKey,
+    tag: "password-recovery",
+  });
+}
+
+export async function sendPurchaseConfirmationEmail(
+  order: InvoiceOrder,
+  config: PurchaseEmailConfig,
+): Promise<PurchaseEmailResult> {
+  const pdf = buildInvoicePdf(order);
+  const content = buildPurchaseEmailContent(order);
+  const idempotencyKey = `purchase-${crypto.createHash("sha256").update(order.job_order_id).digest("hex").slice(0, 40)}`;
+  return sendTransactionalMessage(config, {
+    to: order.customer_email,
+    subject: content.subject,
+    html: content.html,
+    text: content.text,
+    idempotencyKey,
+    tag: "purchase-confirmation",
+    attachments: [{ filename: invoiceFilename(order.job_order_id), content: pdf }],
+  });
 }
