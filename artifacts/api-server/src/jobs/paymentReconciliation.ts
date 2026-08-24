@@ -2,6 +2,7 @@ import { supabaseAdmin as supabase } from "../lib/supabase";
 import { notifyAdmin } from "../lib/notifyAdmin";
 import { fetchSlickPayInvoice } from "../lib/slickpay";
 import { fulfillVerifiedPayment, type PayableOrder } from "../lib/paymentFulfillment";
+import { observeSlickPayPayment } from "../lib/slickpayObservation";
 
 export interface PaymentReconciliationSummary {
   checked: number;
@@ -47,11 +48,12 @@ export async function runPaymentReconciliation(
       summary.checked += 1;
       try {
         const provider = await fetchSlickPayInvoice(String(order.slickpay_invoice_id), 10_000);
-        if (provider.state !== "paid") {
-          summary.pending += 1;
-          continue;
-        }
-        if (provider.amount === null || Math.abs(provider.amount - Number(order.amount)) > 0.001) {
+        const observation = await observeSlickPayPayment(
+          order.order_id,
+          String(order.slickpay_invoice_id),
+          provider,
+        );
+        if (["amount_missing", "amount_mismatch"].includes(observation.result)) {
           summary.errors += 1;
           await notifyAdmin("Paiement SlickPay détecté mais montant absent ou incohérent pendant le rattrapage.", {
             level: "critical",
@@ -60,7 +62,13 @@ export async function runPaymentReconciliation(
           });
           continue;
         }
-        await fulfillVerifiedPayment(order as PayableOrder, "slickpay_reconcile");
+        if (provider.state !== "paid") {
+          summary.pending += 1;
+          continue;
+        }
+        await fulfillVerifiedPayment(order as PayableOrder, "slickpay_reconcile", {
+          paymentTransitioned: observation.transitioned,
+        });
         summary.confirmed += 1;
       } catch (error) {
         summary.errors += 1;

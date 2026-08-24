@@ -31,13 +31,21 @@ export interface FulfillmentResult {
 export async function fulfillVerifiedPayment(
   order: PayableOrder,
   source: "slickpay_return" | "slickpay_webhook" | "slickpay_reconcile" | "admin_manual",
+  options: { paymentTransitioned?: boolean } = {},
 ): Promise<FulfillmentResult> {
   if (["active", "completed"].includes(order.status) && order.payment_status === "paid") {
     return { payment_status: "paid", order_status: order.status as "active" | "completed", idempotent: true };
   }
 
-  const wasAlreadyPaid = order.payment_status === "paid";
-  if (!wasAlreadyPaid) {
+  const usesAtomicProviderObservation = source !== "admin_manual";
+  if (usesAtomicProviderObservation && typeof options.paymentTransitioned !== "boolean") {
+    throw new Error("SLICKPAY_OBSERVATION_REQUIRED");
+  }
+
+  const wasAlreadyPaid = usesAtomicProviderObservation
+    ? options.paymentTransitioned !== true
+    : order.payment_status === "paid";
+  if (!usesAtomicProviderObservation && !wasAlreadyPaid) {
     const { data: transitioned, error: transitionError } = await supabaseAdmin
       .from("orders")
       .update({ payment_status: "paid", status: "pending" })
