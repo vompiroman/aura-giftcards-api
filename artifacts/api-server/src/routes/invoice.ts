@@ -6,7 +6,8 @@ import { PRICES } from "../config/prices";
 import { notifyAdmin } from "../lib/notifyAdmin";
 import { recordPaymentFailure } from "../lib/paymentAlerts";
 import { fetchSlickPayInvoice } from "../lib/slickpay";
-import { fulfillVerifiedPayment, type PayableOrder } from "../lib/paymentFulfillment";
+import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
+import { runPaymentReconciliation } from "../jobs/paymentReconciliation";
 
 const router = Router();
 
@@ -544,47 +545,11 @@ router.post("/cron/reconcile-payments", async (req, res): Promise<any> => {
   if (!process.env.CRON_SECRET) return res.status(503).json({ error: "CRON_SECRET non configuré." });
   if (!validCronSecret(req.get("x-cron-secret"))) return res.status(401).json({ error: "Non autorisé" });
 
-  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const { data: orders, error } = await supabase
-    .from("orders")
-    .select("order_id, assigned_email, amount, status, payment_status, promo_code_id, slickpay_invoice_id, items, marketing_consent, meta_purchase_sent_at")
-    .in("status", ["pending", "cancelled"])
-    .in("payment_status", ["unpaid", "failed"])
-    .not("slickpay_invoice_id", "is", null)
-    .gte("created_at", cutoff)
-    .order("created_at", { ascending: true })
-    .limit(100);
-  if (error) {
-    req.log?.error({ code: error.code }, "Payment reconciliation query failed");
+  try {
+    return res.json(await runPaymentReconciliation(req.log));
+  } catch {
     return res.status(503).json({ error: "Réconciliation indisponible." });
   }
-
-  const summary = { checked: 0, confirmed: 0, pending: 0, errors: 0 };
-  for (const order of orders || []) {
-    summary.checked += 1;
-    try {
-      const provider = await fetchSlickPayInvoice(String(order.slickpay_invoice_id), 10_000);
-      if (provider.state !== "paid") {
-        summary.pending += 1;
-        continue;
-      }
-      if (provider.amount === null || Math.abs(provider.amount - Number(order.amount)) > 0.001) {
-        summary.errors += 1;
-        await notifyAdmin("Paiement SlickPay détecté mais montant absent ou incohérent pendant le rattrapage.", {
-          level: "critical",
-          orderId: order.order_id,
-          dedupeKey: `reconcile-amount-${order.order_id}`,
-        });
-        continue;
-      }
-      await fulfillVerifiedPayment(order as PayableOrder, "slickpay_reconcile");
-      summary.confirmed += 1;
-    } catch (reconcileError) {
-      summary.errors += 1;
-      req.log?.warn({ orderId: order.order_id, errorName: (reconcileError as Error)?.name }, "Payment reconciliation item failed");
-    }
-  }
-  return res.json(summary);
 });
 
 export default router;
