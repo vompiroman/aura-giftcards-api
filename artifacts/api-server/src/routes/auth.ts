@@ -12,6 +12,7 @@ import {
   setSessionCookies,
 } from "../lib/sessionCookies";
 import { normalizeAlgerianMobile } from "../lib/phone";
+import { getPurchaseEmailConfig, sendPasswordRecoveryEmail } from "../lib/purchaseEmail";
 
 const router: IRouter = Router();
 
@@ -360,16 +361,35 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
     
     const origin = (process.env.FRONTEND_URL || "https://www.aura-stream.com").replace(/\/$/, "");
     
-    const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-      redirectTo: `${origin}/?type=recovery`,
+    const { data, error } = await supabaseAdmin.auth.admin.generateLink({
+      type: "recovery",
+      email: normalizedEmail,
+      options: { redirectTo: `${origin}/?type=recovery` },
     });
-    
-    if (error) {
-      req.log.warn({ code: error.code }, "Supabase resetPassword rejected");
+
+    const actionLink = data?.properties?.action_link;
+    const emailConfig = getPurchaseEmailConfig();
+    if (error || !actionLink) {
+      req.log.warn({ code: error?.code || "RECOVERY_LINK_MISSING" }, "Supabase recovery link generation rejected");
       res.json({ message: "Si cet email existe, un lien de réinitialisation a été envoyé." });
       return;
     }
-    
+
+    if (!emailConfig) {
+      req.log.warn({ code: "TRANSACTIONAL_EMAIL_NOT_CONFIGURED" }, "Password recovery email disabled");
+      res.json({ message: "Si cet email existe, un lien de réinitialisation a été envoyé." });
+      return;
+    }
+
+    try {
+      await sendPasswordRecoveryEmail(normalizedEmail, actionLink, emailConfig);
+    } catch (emailError) {
+      const code = typeof (emailError as { code?: unknown })?.code === "string"
+        ? String((emailError as { code: string }).code).slice(0, 100)
+        : "RECOVERY_EMAIL_SEND_FAILED";
+      req.log.warn({ code }, "Password recovery email failed");
+    }
+
     res.json({ message: "Si cet email existe, un lien de réinitialisation a été envoyé." });
   } catch (err) {
     req.log.warn({ message: err instanceof Error ? err.message : "unknown" }, "Forgot-password request failed");

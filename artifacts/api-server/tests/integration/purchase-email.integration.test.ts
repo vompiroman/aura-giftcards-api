@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildPurchaseEmailContent,
   getPurchaseEmailConfig,
+  sendPasswordRecoveryEmail,
   sendPurchaseConfirmationEmail,
 } from "../../src/lib/purchaseEmail";
 import { buildInvoicePdf, type InvoiceOrder } from "../../src/lib/invoicePdf";
@@ -39,6 +40,12 @@ describe("e-mail de confirmation d'achat et facture", () => {
     delete process.env.TRANSACTIONAL_FROM_EMAIL;
     delete process.env.TRANSACTIONAL_FROM_NAME;
     delete process.env.TRANSACTIONAL_REPLY_TO;
+    delete process.env.SMTP_HOST;
+    delete process.env.SMTP_PORT;
+    delete process.env.SMTP_USER;
+    delete process.env.SMTP_PASSWORD;
+    delete process.env.IMAP_ADMIN_PASS;
+    delete process.env.OUTLOOK_PASSWORD;
   });
 
   it("génère une facture PDF valide sans identifiants client", () => {
@@ -91,6 +98,43 @@ describe("e-mail de confirmation d'achat et facture", () => {
   it("désactive l'envoi si la configuration professionnelle est incomplète", () => {
     delete process.env.TRANSACTIONAL_FROM_EMAIL;
     expect(getPurchaseEmailConfig()).toBeNull();
+  });
+
+  it("utilise le SMTP Hostinger lorsque Resend n'est pas configuré", () => {
+    delete process.env.RESEND_API_KEY;
+    process.env.SMTP_HOST = "smtp.hostinger.com";
+    process.env.SMTP_PORT = "465";
+    process.env.SMTP_USER = "admin@aura-stream.com";
+    process.env.OUTLOOK_PASSWORD = "existing-render-mailbox-secret";
+    process.env.TRANSACTIONAL_FROM_EMAIL = "admin@aura-stream.com";
+
+    expect(getPurchaseEmailConfig()).toMatchObject({
+      provider: "smtp",
+      host: "smtp.hostinger.com",
+      port: 465,
+      secure: true,
+      user: "admin@aura-stream.com",
+      fromEmail: "admin@aura-stream.com",
+    });
+  });
+
+  it("envoie le lien de récupération via le fournisseur transactionnel", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "recovery-provider-123" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const link = "https://test-project.supabase.co/auth/v1/verify?token=opaque&type=recovery";
+
+    const result = await sendPasswordRecoveryEmail("client@example.com", link, getPurchaseEmailConfig()!);
+
+    expect(result.providerId).toBe("recovery-provider-123");
+    const [, request] = fetchMock.mock.calls[0];
+    const payload = JSON.parse(String(request?.body));
+    expect(payload.from).toBe("Aura Stream <support@aura-stream.com>");
+    expect(payload.subject).toContain("mot de passe");
+    expect(payload.html).toContain(link.replace(/&/g, "&amp;"));
+    expect(payload.attachments).toBeUndefined();
   });
 
   it("rejette une réponse fournisseur invalide sans exposer son corps", async () => {
