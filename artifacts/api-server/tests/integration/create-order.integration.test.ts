@@ -76,6 +76,19 @@ describe("POST /api/create-order", () => {
     expect(res.body.amount).toBe(600);
   });
 
+  it("ne supprime plus une ancienne commande sans vérification SlickPay", async () => {
+    const builder = orderInsertStub();
+    fromMock.mockReturnValue(builder);
+
+    const res = await request(app)
+      .post("/api/create-order")
+      .set("Authorization", `Bearer ${VALID_TOKEN}`)
+      .send({ items: [{ name: "Netflix Premium 1 mois", quantity: 1 }] });
+
+    expect(res.status).toBe(201);
+    expect(builder.delete).not.toHaveBeenCalled();
+  });
+
   it("enregistre le consentement marketing avec sa version", async () => {
     const builder = orderInsertStub();
     fromMock.mockReturnValue(builder);
