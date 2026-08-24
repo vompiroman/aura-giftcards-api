@@ -22,6 +22,8 @@ vi.mock("../../src/lib/supabase", () => ({
 import app from "../../src/app";
 
 const WEBHOOK_SECRET = "test-webhook-secret";
+let assignmentResponse: { data: any; error: any };
+let observedPaidOrders: Set<string>;
 
 function webhookPayload(orderId: string) {
   return {
@@ -93,6 +95,40 @@ describe("POST /api/webhook", () => {
     process.env.SLICKPAY_API_KEY = "test-api-key";
     delete process.env.META_CAPI_ACCESS_TOKEN;
     sendMetaPurchaseMock.mockResolvedValue(true);
+    assignmentResponse = { data: { status: "assigned", assigned_id: "inv-1" }, error: null };
+    observedPaidOrders = new Set();
+    rpcMock.mockImplementation(async (name: string, params: Record<string, any>) => {
+      if (name === "observe_slickpay_payment") {
+        const providerState = String(params?.p_provider_status || "pending");
+        const orderId = String(params?.p_order_id || "");
+        if (providerState === "paid" && params?.p_verified_amount === null) {
+          return { data: { result: "amount_missing", transitioned: false, payment_status: "unpaid", order_status: "pending" }, error: null };
+        }
+        if (providerState === "paid" && Number(params?.p_verified_amount) !== 800) {
+          return { data: { result: "amount_mismatch", transitioned: false, payment_status: "unpaid", order_status: "pending" }, error: null };
+        }
+        if (providerState === "paid") {
+          const transitioned = !observedPaidOrders.has(orderId);
+          observedPaidOrders.add(orderId);
+          return {
+            data: {
+              result: transitioned ? "confirmed" : "already_paid",
+              transitioned,
+              payment_status: "paid",
+              order_status: "pending",
+            },
+            error: null,
+          };
+        }
+        return {
+          data: { result: providerState, transitioned: false, payment_status: providerState, order_status: "pending" },
+          error: null,
+        };
+      }
+      if (name === "assign_inventory_for_order") return assignmentResponse;
+      if (name === "reserve_promo_redemption") return { data: true, error: null };
+      return { data: null, error: null };
+    });
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,
       json: async () => ({ completed: 1, data: { payment_status: "paid", amount: 800 } }),
@@ -122,7 +158,7 @@ describe("POST /api/webhook", () => {
   });
 
   it("alerte l'admin sans activer quand le stock est épuisé", async () => {
-    rpcMock.mockResolvedValue({ data: null, error: { message: "OUT_OF_STOCK: Netflix" } });
+    assignmentResponse = { data: null, error: { message: "OUT_OF_STOCK: Netflix" } };
 
     const res = await request(app)
       .post("/api/webhook")
@@ -138,8 +174,6 @@ describe("POST /api/webhook", () => {
   });
 
   it("active après revalidation SlickPay quand le stock est disponible", async () => {
-    rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
-
     const res = await request(app)
       .post("/api/webhook")
       .set("x-webhook-secret", WEBHOOK_SECRET)
@@ -147,7 +181,26 @@ describe("POST /api/webhook", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.activated).toBe(true);
-    expect(rpcMock).toHaveBeenCalledTimes(1);
+    expect(rpcMock).toHaveBeenCalledWith("observe_slickpay_payment", expect.objectContaining({
+      p_provider_status: "paid",
+      p_verified_amount: 800,
+    }));
+    expect(rpcMock).toHaveBeenCalledWith("assign_inventory_for_order", expect.any(Object));
+  });
+
+  it("confirme via l'API même si le webhook ne fournit aucun statut", async () => {
+    const res = await request(app)
+      .post("/api/webhook")
+      .set("x-webhook-secret", WEBHOOK_SECRET)
+      .send({ invoice_id: "INV-ORD-x", order_id: "ORD-x" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.activated).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(rpcMock).toHaveBeenCalledWith("observe_slickpay_payment", expect.objectContaining({
+      p_provider_status: "paid",
+      p_verified_amount: 800,
+    }));
   });
 
   it("ne réassigne pas une commande déjà terminée", async () => {
@@ -182,8 +235,10 @@ describe("POST /api/webhook", () => {
       .send(webhookPayload("ORD-x"));
 
     expect(res.status).toBe(200);
-    expect(res.body.verified).toBe(false);
-    expect(rpcMock).not.toHaveBeenCalled();
+    expect(res.body.verified).toBe(true);
+    expect(res.body.payment_status).toBe("unpaid");
+    expect(rpcMock).toHaveBeenCalledTimes(1);
+    expect(rpcMock).not.toHaveBeenCalledWith("assign_inventory_for_order", expect.any(Object));
   });
 
   it("bloque un paiement confirmé sans montant vérifiable", async () => {
@@ -199,16 +254,34 @@ describe("POST /api/webhook", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.amount_unavailable).toBe(true);
-    expect(rpcMock).not.toHaveBeenCalled();
+    expect(rpcMock).toHaveBeenCalledTimes(1);
     expect(notifyAdminMock).toHaveBeenCalledWith(
       expect.stringContaining("Montant SlickPay absent"),
       expect.objectContaining({ level: "critical", orderId: "ORD-x" }),
     );
   });
 
-  it("n'envoie jamais Purchase sans consentement marketing", async () => {
-    rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
+  it("bloque un paiement dont le montant ne correspond pas à la commande", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ completed: 1, data: { payment_status: "paid", amount: 799 } }),
+    } as Response);
 
+    const res = await request(app)
+      .post("/api/webhook")
+      .set("x-webhook-secret", WEBHOOK_SECRET)
+      .send(webhookPayload("ORD-x"));
+
+    expect(res.status).toBe(200);
+    expect(res.body.amount_mismatch).toBe(true);
+    expect(rpcMock).not.toHaveBeenCalledWith("assign_inventory_for_order", expect.any(Object));
+    expect(notifyAdminMock).toHaveBeenCalledWith(
+      expect.stringContaining("différent"),
+      expect.objectContaining({ level: "critical", orderId: "ORD-x" }),
+    );
+  });
+
+  it("n'envoie jamais Purchase sans consentement marketing", async () => {
     const res = await request(app)
       .post("/api/webhook")
       .set("x-webhook-secret", WEBHOOK_SECRET)
@@ -219,7 +292,6 @@ describe("POST /api/webhook", () => {
   });
 
   it("n'envoie qu'un Purchase lors du rejeu d'un webhook payé", async () => {
-    rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
     fromMock.mockImplementation(statefulOrderQueries({
       order_id: "ORD-meta-123",
       status: "pending",
@@ -248,7 +320,6 @@ describe("POST /api/webhook", () => {
   });
 
   it("ne lance qu'une attribution lors de deux webhooks concurrents", async () => {
-    rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
     fromMock.mockImplementation(statefulOrderQueries({
       order_id: "ORD-concurrent-1",
       status: "pending",
@@ -271,7 +342,6 @@ describe("POST /api/webhook", () => {
   });
 
   it("confirme le paiement même si Meta refuse l'événement", async () => {
-    rpcMock.mockResolvedValue({ data: { assigned_id: "inv-1" }, error: null });
     sendMetaPurchaseMock.mockResolvedValue(false);
     fromMock.mockReturnValue(orderQueryStub({
       order_id: "ORD-meta-fail",
@@ -292,6 +362,7 @@ describe("POST /api/webhook", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.activated).toBe(true);
-    expect(rpcMock).toHaveBeenCalledTimes(1);
+    expect(rpcMock).toHaveBeenCalledWith("observe_slickpay_payment", expect.any(Object));
+    expect(rpcMock).toHaveBeenCalledWith("assign_inventory_for_order", expect.any(Object));
   });
 });

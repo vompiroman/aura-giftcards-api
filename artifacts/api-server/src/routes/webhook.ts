@@ -6,6 +6,7 @@ import { notifyAdmin } from "../lib/notifyAdmin";
 import { recordPaymentFailure } from "../lib/paymentAlerts";
 import { fetchSlickPayInvoice } from "../lib/slickpay";
 import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
+import { observeSlickPayPayment } from "../lib/slickpayObservation";
 
 const router = Router();
 
@@ -27,29 +28,43 @@ function validSecret(received: unknown): boolean {
   return crypto.timingSafeEqual(a, b);
 }
 
+function webhookScalar(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") return String(value).trim();
+  return "";
+}
+
+function webhookMetadata(body: any): Record<string, unknown> {
+  const raw = body?.webhook_meta_data ?? body?.meta_data ?? body?.data?.webhook_meta_data;
+  if (Array.isArray(raw)) {
+    return raw.find((entry) => entry && typeof entry === "object") || {};
+  }
+  return raw && typeof raw === "object" ? raw : {};
+}
+
 router.post("/webhook", webhookLimiter, async (req, res) => {
   try {
-    const receivedSecret = req.headers["x-webhook-secret"] ?? req.body?.webhook_signature;
+    const receivedSecret = req.headers["x-webhook-secret"]
+      ?? req.headers["x-slickpay-signature"]
+      ?? req.body?.webhook_signature
+      ?? req.body?.signature;
     if (!validSecret(receivedSecret)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const invoiceId = String(req.body?.invoice_id ?? req.body?.id ?? "");
-    const orderIdParam = String(req.body?.order_id ?? "");
-    const rawStatus = String(
-      req.body?.status
-      ?? req.body?.payment_status
-      ?? req.body?.completed
-      ?? req.body?.data?.status
-      ?? req.body?.data?.payment_status
-      ?? req.body?.data?.completed
-      ?? "",
-    ).toLowerCase();
+    const metadata = webhookMetadata(req.body);
+    const invoiceObject = req.body?.invoice && typeof req.body.invoice === "object" ? req.body.invoice : null;
+    const invoiceId = webhookScalar(
+      req.body?.invoice_id
+      ?? req.body?.id
+      ?? invoiceObject?.id
+      ?? req.body?.invoice
+      ?? req.body?.data?.invoice_id
+      ?? req.body?.data?.id
+      ?? metadata.invoice_id,
+    );
+    const orderIdParam = webhookScalar(req.body?.order_id ?? req.body?.data?.order_id ?? metadata.order_id);
     
     if (!invoiceId || invoiceId.length > 160) return res.status(400).json({ error: "invoice_id manquant" });
-
-    const isPaid = ["completed", "paid", "success", "successful", "1", "true"].includes(rawStatus);
-    const isFailed = ["failed", "cancelled", "canceled", "0"].includes(rawStatus);
 
     const query = supabase
       .from("orders")
@@ -72,43 +87,28 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
     }
 
     const verified = await fetchSlickPayInvoice(invoiceId, 10_000);
+    const observation = await observeSlickPayPayment(order.order_id, invoiceId, verified);
 
-    if (isFailed) {
-      if (verified.state !== "failed" || order.payment_status === "paid") {
-        return res.status(200).json({ received: true, ignored: true });
-      }
-      const { error: cancelError } = await supabase
-        .from("orders")
-        .update({ status: "cancelled", payment_status: "failed" })
-        .eq("order_id", order.order_id)
-        .eq("status", "pending")
-        .eq("payment_status", "unpaid");
-      if (cancelError) throw cancelError;
-      return res.status(200).json({ received: true });
+    if (observation.result === "amount_missing") {
+      await notifyAdmin("Montant SlickPay absent de la vérification. Activation bloquée.", {
+        level: "critical",
+        orderId: order.order_id,
+        dedupeKey: `amount-missing-${order.order_id}`,
+      });
+      return res.status(200).json({ received: true, amount_unavailable: true });
     }
-
-    if (isPaid) {
-      if (verified.state !== "paid") {
-        return res.status(200).json({ received: true, verified: false });
-      }
-      if (verified.amount === null) {
-        await notifyAdmin("Montant SlickPay absent de la vérification. Activation bloquée.", {
-          level: "critical",
-          orderId: order.order_id,
-          dedupeKey: `amount-missing-${order.order_id}`,
-        });
-        return res.status(200).json({ received: true, amount_unavailable: true });
-      }
-      if (Math.abs(verified.amount - Number(order.amount)) > 0.001) {
-        await notifyAdmin("Montant SlickPay différent du montant de commande. Activation bloquée.", {
-          level: "critical",
-          orderId: order.order_id,
-          dedupeKey: `amount-mismatch-${order.order_id}`,
-        });
-        return res.status(200).json({ received: true, amount_mismatch: true });
-      }
-
-      const result = await fulfillVerifiedPayment(order, "slickpay_webhook");
+    if (observation.result === "amount_mismatch") {
+      await notifyAdmin("Montant SlickPay différent du montant de commande. Activation bloquée.", {
+        level: "critical",
+        orderId: order.order_id,
+        dedupeKey: `amount-mismatch-${order.order_id}`,
+      });
+      return res.status(200).json({ received: true, amount_mismatch: true });
+    }
+    if (verified.state === "paid") {
+      const result = await fulfillVerifiedPayment(order, "slickpay_webhook", {
+        paymentTransitioned: observation.transitioned,
+      });
       return res.status(200).json({
         received: true,
         activated: result.order_status === "active",
@@ -116,8 +116,12 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
         ...result,
       });
     }
-
-    return res.status(200).json({ received: true, ignored: rawStatus });
+    return res.status(200).json({
+      received: true,
+      verified: true,
+      payment_status: observation.payment_status || verified.state,
+      order_status: observation.order_status || order.status,
+    });
   } catch (err) {
     console.error("Webhook payment processing failed.");
     void recordPaymentFailure("webhook", String(req.body?.order_id || "unknown"));

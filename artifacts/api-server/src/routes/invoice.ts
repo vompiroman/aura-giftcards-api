@@ -8,6 +8,7 @@ import { recordPaymentFailure } from "../lib/paymentAlerts";
 import { fetchSlickPayInvoice } from "../lib/slickpay";
 import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 import { runPaymentReconciliation } from "../jobs/paymentReconciliation";
+import { observeSlickPayPayment } from "../lib/slickpayObservation";
 
 const router = Router();
 
@@ -490,10 +491,8 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       return;
     }
 
-    const paymentState = provider.state;
-    const providerAmount = provider.amount;
-
-    if (providerAmount === null) {
+    const observation = await observeSlickPayPayment(order.order_id, order.slickpay_invoice_id, provider);
+    if (observation.result === "amount_missing") {
       req.log?.error({ orderId }, "SlickPay response did not include a numeric amount");
       await notifyAdmin(`Montant SlickPay absent pour la commande ${orderId}.`, {
         level: "critical",
@@ -505,8 +504,8 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       return;
     }
 
-    if (Math.abs(providerAmount - Number(order.amount)) > 0.001) {
-      req.log?.error({ orderId, expected: order.amount, received: providerAmount }, "SlickPay amount mismatch");
+    if (observation.result === "amount_mismatch") {
+      req.log?.error({ orderId, expected: order.amount, received: provider.amount }, "SlickPay amount mismatch");
       await notifyAdmin(`Montant SlickPay incohérent pour la commande ${orderId}.`, {
         level: "critical",
         orderId,
@@ -517,23 +516,18 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       return;
     }
 
-    if (paymentState !== "paid") {
-      if (paymentState === "failed") {
-        await supabase
-          .from("orders")
-          .update({ payment_status: "failed", status: "cancelled" })
-          .eq("order_id", orderId)
-          .eq("status", "pending");
-      }
+    if (provider.state !== "paid") {
       res.json({
         verified: true,
-        payment_status: paymentState,
-        order_status: paymentState === "failed" ? "cancelled" : order.status,
+        payment_status: observation.payment_status || provider.state,
+        order_status: observation.order_status || order.status,
       });
       return;
     }
 
-    const result = await fulfillVerifiedPayment(order, "slickpay_return");
+    const result = await fulfillVerifiedPayment(order, "slickpay_return", {
+      paymentTransitioned: observation.transitioned,
+    });
     res.json({ verified: true, ...result });
   } catch (err) {
     req.log?.error({ errorName: (err as Error)?.name }, "Payment verification failed unexpectedly");
