@@ -6,6 +6,7 @@ import {
   sendPurchaseConfirmationEmail,
 } from "../../src/lib/purchaseEmail";
 import { buildInvoicePdf, type InvoiceOrder } from "../../src/lib/invoicePdf";
+import { resolveInvoiceLines } from "../../src/lib/invoiceLines";
 
 const order: InvoiceOrder = {
   job_order_id: "ORD-12345678-ABCD",
@@ -67,6 +68,29 @@ describe("e-mail de confirmation d'achat et facture", () => {
     expect(content.html).not.toContain("super-secret");
   });
 
+  it("réconcilie les anciens noms de produit avec le montant réellement payé", () => {
+    const legacyOrder: InvoiceOrder = {
+      ...order,
+      total_amount: 600,
+      subtotal_amount: null,
+      discount_amount: 0,
+      order_items: [{ name: "Netflix 1 mois", quantity: 1 }],
+    };
+    expect(resolveInvoiceLines(
+      legacyOrder.order_items,
+      legacyOrder.subtotal_amount,
+      legacyOrder.total_amount,
+      legacyOrder.discount_amount,
+    )).toEqual([{
+      name: "Netflix 1 mois",
+      quantity: 1,
+      unitPrice: 600,
+      total: 600,
+    }]);
+    expect(buildPurchaseEmailContent(legacyOrder).text).toContain("Netflix 1 mois × 1 : 600 DA");
+    expect(buildInvoicePdf(legacyOrder).toString("binary")).toContain("(600 DA)");
+  });
+
   it("envoie via Resend avec une clé d'idempotence et la facture jointe", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "email-provider-123" }), {
       status: 200,
@@ -84,12 +108,13 @@ describe("e-mail de confirmation d'achat et facture", () => {
     expect(url).toBe("https://api.resend.com/emails");
     expect(request?.headers).toMatchObject({
       Authorization: "Bearer re_test_api_key",
-      "Idempotency-Key": expect.stringMatching(/^purchase-[a-f0-9]{40}$/),
+      "Idempotency-Key": expect.stringMatching(/^purchase-v2-[a-f0-9]{40}$/),
     });
     const payload = JSON.parse(String(request?.body));
     expect(payload.from).toBe("Aura Stream <support@aura-stream.com>");
     expect(payload.to).toEqual(["client@example.com"]);
     expect(payload.attachments[0].filename).toMatch(/^facture-aura-stream-.*\.pdf$/);
+    expect(payload.attachments[0].content_type).toBe("application/pdf");
     const attachment = Buffer.from(payload.attachments[0].content, "base64");
     expect(attachment.subarray(0, 8).toString("ascii")).toBe("%PDF-1.4");
     expect(JSON.stringify(payload)).not.toContain("super-secret");

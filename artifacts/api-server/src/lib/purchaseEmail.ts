@@ -1,8 +1,7 @@
 import crypto from "crypto";
 import nodemailer from "nodemailer";
-import { PRICES } from "../config/prices";
-import { publicOrderItems } from "./orderItems";
 import { buildInvoicePdf, invoiceFilename, type InvoiceOrder } from "./invoicePdf";
+import { resolveInvoiceLines } from "./invoiceLines";
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -40,7 +39,7 @@ interface TransactionalMessage {
   text: string;
   idempotencyKey: string;
   tag: string;
-  attachments?: Array<{ filename: string; content: Buffer }>;
+  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 }
 
 function validEmail(value: string): boolean {
@@ -57,12 +56,12 @@ function escapeHtml(value: string): string {
   })[char] || char);
 }
 
-function amount(value: number | string): number {
+function amount(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : 0;
 }
 
-function formatDa(value: number | string): string {
+function formatDa(value: unknown): string {
   return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(amount(value))} DA`;
 }
 
@@ -99,16 +98,13 @@ export function getPurchaseEmailConfig(): PurchaseEmailConfig | null {
   };
 }
 
-function emailItems(order: InvoiceOrder): Array<{ name: string; quantity: number; total: number }> {
-  return publicOrderItems(order.order_items).map((item) => {
-    const name = String(item?.name || "Abonnement Aura Stream").replace(/[\r\n]+/g, " ").trim().slice(0, 100);
-    const quantity = Number.isInteger(Number(item?.quantity)) ? Math.max(1, Math.min(20, Number(item.quantity))) : 1;
-    return { name, quantity, total: amount(PRICES[name] ?? 0) * quantity };
-  });
-}
-
 export function buildPurchaseEmailContent(order: InvoiceOrder): { subject: string; html: string; text: string } {
-  const lines = emailItems(order);
+  const lines = resolveInvoiceLines(
+    order.order_items,
+    order.subtotal_amount,
+    order.total_amount,
+    order.discount_amount,
+  );
   const itemRows = lines.map((line) => `
     <tr>
       <td style="padding:12px 0;border-bottom:1px solid #e3dad0;color:#23242a;font-size:14px;">${escapeHtml(line.name)} × ${line.quantity}</td>
@@ -236,6 +232,7 @@ async function sendTransactionalMessage(
         attachments: message.attachments?.map((attachment) => ({
           filename: attachment.filename,
           content: attachment.content.toString("base64"),
+          content_type: attachment.contentType,
         })),
         tags: [{ name: "category", value: message.tag }],
       }),
@@ -310,7 +307,7 @@ export async function sendPurchaseConfirmationEmail(
 ): Promise<PurchaseEmailResult> {
   const pdf = buildInvoicePdf(order);
   const content = buildPurchaseEmailContent(order);
-  const idempotencyKey = `purchase-${crypto.createHash("sha256").update(order.job_order_id).digest("hex").slice(0, 40)}`;
+  const idempotencyKey = `purchase-v2-${crypto.createHash("sha256").update(order.job_order_id).digest("hex").slice(0, 40)}`;
   return sendTransactionalMessage(config, {
     to: order.customer_email,
     subject: content.subject,
@@ -318,6 +315,10 @@ export async function sendPurchaseConfirmationEmail(
     text: content.text,
     idempotencyKey,
     tag: "purchase-confirmation",
-    attachments: [{ filename: invoiceFilename(order.job_order_id), content: pdf }],
+    attachments: [{
+      filename: invoiceFilename(order.job_order_id),
+      content: pdf,
+      contentType: "application/pdf",
+    }],
   });
 }

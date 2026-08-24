@@ -1,45 +1,23 @@
-import { PRICES } from "../config/prices";
-import { publicOrderItems } from "./orderItems";
+import { resolveInvoiceLines } from "./invoiceLines";
 
 export interface InvoiceOrder {
   job_order_id: string;
   customer_email: string;
   total_amount: number | string;
-  subtotal_amount: number | string;
-  discount_amount: number | string;
+  subtotal_amount: number | string | null;
+  discount_amount: number | string | null;
   order_items: unknown;
   ordered_at: string;
   paid_at: string;
 }
 
-interface InvoiceLine {
-  name: string;
-  quantity: number;
-  unitPrice: number;
-  total: number;
-}
-
 const A4_WIDTH = 595;
 const A4_HEIGHT = 842;
 
-function finiteAmount(value: number | string, fallback = 0): number {
+function finiteAmount(value: unknown, fallback = 0): number {
+  if (value === null || value === undefined || value === "") return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : fallback;
-}
-
-function invoiceLines(items: unknown): InvoiceLine[] {
-  const grouped = new Map<string, number>();
-  for (const item of publicOrderItems(items)) {
-    const name = String(item?.name || "Abonnement Aura Stream").replace(/[\r\n]+/g, " ").trim().slice(0, 100);
-    const quantity = Number.isInteger(Number(item?.quantity))
-      ? Math.max(1, Math.min(20, Number(item.quantity)))
-      : 1;
-    grouped.set(name, (grouped.get(name) || 0) + quantity);
-  }
-  return [...grouped.entries()].map(([name, quantity]) => {
-    const unitPrice = finiteAmount(PRICES[name] ?? 0);
-    return { name, quantity, unitPrice, total: unitPrice * quantity };
-  });
 }
 
 function formatDa(value: number): string {
@@ -111,7 +89,12 @@ function contentStream(order: InvoiceOrder): string {
   const total = finiteAmount(order.total_amount);
   const subtotal = finiteAmount(order.subtotal_amount, total);
   const discount = finiteAmount(order.discount_amount);
-  const lines = invoiceLines(order.order_items);
+  const lines = resolveInvoiceLines(
+    order.order_items,
+    order.subtotal_amount,
+    order.total_amount,
+    order.discount_amount,
+  );
   const number = invoiceNumber(order.job_order_id, order.paid_at);
   const commands: string[] = [
     "q 0.965 0.949 0.925 rg 0 0 595 842 re f Q",
