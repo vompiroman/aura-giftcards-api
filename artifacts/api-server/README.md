@@ -81,3 +81,5 @@ Après le passage d'une commande à `paid`, le serveur envoie un e-mail de confi
 | `TRANSACTIONAL_REPLY_TO` | Adresse professionnelle qui reçoit les réponses (optionnelle) |
 
 La même clé Resend peut servir de mot de passe SMTP dans Supabase Auth pour que les e-mails de récupération de mot de passe utilisent également le domaine professionnel. Les identifiants d'activation Spotify/Crunchyroll ne sont jamais inclus dans l'e-mail ni dans la facture.
+
+Pour le projet Supabase hébergé, copie le contenu de `supabase/templates/recovery.html` dans **Authentication → Email Templates → Reset password** et utilise le sujet `Réinitialise ton mot de passe Aura Stream`. Le modèle conserve les variables officielles `{{ .ConfirmationURL }}` et `{{ .Email }}`. Le fichier est versionné afin que toute modification future puisse être relue et testée avant d'être copiée dans le Dashboard.
