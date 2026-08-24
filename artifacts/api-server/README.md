@@ -68,3 +68,16 @@ compte bénéficiaire par défaut n'est défini dans SlickPay.
 Le webhook de paiement peut envoyer l'événement `Purchase` à la Conversion API Meta. Configure `META_CAPI_ACCESS_TOKEN` et, si nécessaire, `META_PIXEL_ID` et `META_GRAPH_API_VERSION`. L'adresse email est normalisée puis hachée en SHA-256 avant l'envoi ; aucun identifiant de compte streaming n'est transmis.
 
 Le workflow `stock-alerts.yml` appelle chaque jour la route protégée `/api/cron/stock-alerts`. Configure les secrets GitHub `PRODUCTION_API_ORIGIN` et `CRON_SECRET`, ainsi que `DISCORD_ADMIN_WEBHOOK_URL`, `LOW_STOCK_THRESHOLD` et `LOW_STOCK_SERVICES` sur le serveur.
+
+## E-mails transactionnels et factures
+
+Après le passage d'une commande à `paid`, le serveur envoie un e-mail de confirmation dédupliqué avec une facture PDF jointe. Les anciennes commandes déjà payées ne sont pas renvoyées. Configure les variables suivantes sur Render :
+
+| Variable | Description |
+|---|---|
+| `RESEND_API_KEY` | Clé API Resend du domaine vérifié (secret) |
+| `TRANSACTIONAL_FROM_EMAIL` | Adresse professionnelle expéditrice, par exemple `support@aura-stream.com` |
+| `TRANSACTIONAL_FROM_NAME` | Nom affiché, par défaut `Aura Stream` |
+| `TRANSACTIONAL_REPLY_TO` | Adresse professionnelle qui reçoit les réponses (optionnelle) |
+
+La même clé Resend peut servir de mot de passe SMTP dans Supabase Auth pour que les e-mails de récupération de mot de passe utilisent également le domaine professionnel. Les identifiants d'activation Spotify/Crunchyroll ne sont jamais inclus dans l'e-mail ni dans la facture.

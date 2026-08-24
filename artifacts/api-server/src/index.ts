@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { schedulePaymentReconciliationInterval } from "./jobs/paymentReconciliation";
+import { schedulePurchaseEmailDeliveryInterval } from "./jobs/purchaseEmailDelivery";
 
 const rawPort = process.env["PORT"];
 
@@ -19,4 +20,5 @@ if (Number.isNaN(port) || port <= 0) {
 app.listen(port, "0.0.0.0", () => {
   logger.info({ port }, "Server listening on 0.0.0.0");
   schedulePaymentReconciliationInterval();
+  schedulePurchaseEmailDeliveryInterval();
 });
