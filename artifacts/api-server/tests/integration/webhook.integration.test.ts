@@ -34,7 +34,7 @@ function webhookPayload(orderId: string) {
 
 function orderQueryStub(orderRow: Record<string, unknown> | null) {
   const builder: Record<string, any> = {};
-  for (const method of ["select", "eq", "update", "insert", "is", "neq"]) {
+  for (const method of ["select", "eq", "update", "insert", "is", "neq", "in"]) {
     builder[method] = vi.fn(() => builder);
   }
   builder.single = vi.fn(async () => ({ data: orderRow, error: null }));
@@ -67,6 +67,10 @@ function statefulOrderQueries(orderRow: Record<string, any>) {
       return builder;
     });
     builder.neq = vi.fn(() => builder);
+    builder.in = vi.fn((column: string, values: unknown[]) => {
+      if (column === "payment_status") expectedPaymentStatus = values.includes(paymentStatus) ? paymentStatus : "__none__";
+      return builder;
+    });
     builder.is = vi.fn(() => builder);
     builder.update = vi.fn((value: Record<string, unknown>) => {
       updateValue = value;

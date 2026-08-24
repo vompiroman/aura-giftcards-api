@@ -9,6 +9,8 @@ import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
 import { isAdmin, requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
 import {
   adminOrderItems,
+  customerWhatsappFromItems,
+  manualActivationReady,
   orderItemSummary,
   parseOrderItems,
   publicOrderItems,
@@ -34,6 +36,9 @@ import {
   promoSupportsItems,
   promoUsageExhausted,
 } from "../lib/promos";
+import { normalizeAlgerianMobile } from "../lib/phone";
+import { expiresAtFromItems } from "../lib/payments";
+import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 
 const router: IRouter = Router();
 const MARKETING_CONSENT_VERSION = "2026-07-26";
@@ -90,6 +95,13 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     }
 
     const { items } = req.body;
+    const customerWhatsapp = typeof req.body?.customer_whatsapp === "string"
+      ? normalizeAlgerianMobile(req.body.customer_whatsapp.slice(0, 40))
+      : "";
+    if (req.body?.customer_whatsapp && !customerWhatsapp) {
+      res.status(400).json({ error: "Numéro WhatsApp invalide." });
+      return;
+    }
     const pricing = computeCart(items);
     if (!pricing.ok) {
       res.status(400).json({ error: pricing.error });
@@ -179,6 +191,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       marketing_consent: marketingConsent,
       marketing_consent_at: marketingConsent ? new Date().toISOString() : null,
       consent_version: marketingConsent ? MARKETING_CONSENT_VERSION : null,
+      customer_whatsapp: customerWhatsapp || null,
     }).select("order_id");
 
     if (insertError) {
@@ -435,7 +448,7 @@ router.get("/admin/orders-export.csv", orderReadLimiter, requireAdmin, async (re
     for (let offset = 0; offset < maxRows; offset += pageSize) {
       const { data, error } = await supabaseAdmin
         .from("orders")
-        .select("order_id, assigned_email, amount, status, payment_status, items, created_at, expires_at, activated_at")
+        .select("order_id, assigned_email, customer_whatsapp, amount, status, payment_status, items, created_at, expires_at, activated_at")
         .order("created_at", { ascending: false })
         .range(offset, offset + pageSize - 1);
       if (error) {
@@ -521,7 +534,7 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
     const buildOrdersQuery = () => {
       let query = supabaseAdmin
         .from("orders")
-        .select("id, order_id, assigned_email, amount, status, payment_status, items, created_at, expires_at, activated_at", { count: "exact" })
+        .select("id, order_id, assigned_email, customer_whatsapp, amount, status, payment_status, items, created_at, expires_at, activated_at", { count: "exact" })
         .order(selectedSort.column, { ascending: selectedSort.ascending });
       if (statusFilter) query = query.eq("status", statusFilter);
       if (followUpFilter) {
@@ -571,10 +584,14 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       return;
     }
 
-    res.json({ orders: (data || []).map((order: any) => ({
-      ...order,
-      items: adminOrderItems(order.items),
-    })), total: count || 0, page, limit: pageSize, total_pages: Math.ceil((count || 0) / pageSize) });
+    res.json({ orders: (data || []).map((order: any) => {
+      const adminItems = adminOrderItems(order.items);
+      return {
+        ...order,
+        customer_whatsapp: order.customer_whatsapp || customerWhatsappFromItems(order.items),
+        items: adminItems,
+      };
+    }), total: count || 0, page, limit: pageSize, total_pages: Math.ceil((count || 0) / pageSize) });
   } catch (err) {
     req.log.error({ err }, "Unexpected error in GET /admin/all-orders");
     res.status(500).json({ error: "Erreur interne du serveur." });
@@ -595,36 +612,78 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
       return res.status(403).json({ error: "Accès refusé. Admin requis." });
     }
 
-    const { order_id, status } = req.body;
-    if (!order_id || !status) return res.status(400).json({ error: "order_id et status requis." });
+    const { order_id, status, confirm_payment } = req.body;
+    if (!order_id || (!status && confirm_payment !== true)) return res.status(400).json({ error: "Action de commande manquante." });
     if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id)) {
       return res.status(400).json({ error: "Identifiant de commande invalide." });
     }
-    if (!['pending', 'active', 'completed', 'cancelled'].includes(status)) return res.status(400).json({ error: "Statut invalide." });
+    if (status && !['pending', 'active', 'completed', 'cancelled'].includes(status)) return res.status(400).json({ error: "Statut invalide." });
 
-    const { data: currentOrder, error: currentOrderError } = await supabaseAdmin
+    let { data: currentOrder, error: currentOrderError } = await supabaseAdmin
       .from("orders")
-      .select("status, payment_status")
+      .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, expires_at, activated_at, marketing_consent, meta_purchase_sent_at")
       .eq("order_id", order_id)
       .single();
     if (currentOrderError || !currentOrder) return res.status(404).json({ error: "Commande introuvable." });
+
+    if (confirm_payment === true && currentOrder.payment_status !== "paid") {
+      const fulfillment = await fulfillVerifiedPayment(currentOrder, "admin_manual");
+      void appendAuditLog({
+        action: "admin_payment_confirmation",
+        actorUserId: userData.user.id,
+        targetType: "order",
+        targetId: order_id,
+        details: { previous_payment_status: currentOrder.payment_status },
+      });
+      const refreshed = await supabaseAdmin
+        .from("orders")
+        .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, expires_at, activated_at, marketing_consent, meta_purchase_sent_at")
+        .eq("order_id", order_id)
+        .single();
+      if (refreshed.error || !refreshed.data) throw refreshed.error || new Error("ORDER_REFRESH_FAILED");
+      currentOrder = refreshed.data;
+      if (!status) return res.json({ success: true, ...fulfillment });
+    }
+    if (!status) return res.json({ success: true, payment_status: currentOrder.payment_status, order_status: currentOrder.status, idempotent: true });
+
     if (status === "active" && currentOrder.payment_status !== "paid") {
       return res.status(409).json({ error: "Impossible d'activer une commande dont le paiement n'est pas confirmé." });
     }
     if (status === "active") {
-      const { count: assignedCount, error: inventoryError } = await supabaseAdmin
-        .from("inventory")
-        .select("id", { count: "exact", head: true })
-        .eq("assigned_order_id", order_id)
-        .eq("is_used", true);
-      if (inventoryError) return res.status(503).json({ error: "Impossible de vérifier l'attribution du stock." });
-      if (!assignedCount) {
-        return res.status(409).json({ error: "Impossible d'activer une commande sans compte attribué." });
+      const parsedItems = parseOrderItems(currentOrder.items);
+      const netflixQuantity = parsedItems.reduce((total: number, item: any) => {
+        const name = String(item?.name || item?.service || "").toLowerCase();
+        return total + (name.includes("netflix") ? Math.max(1, Number(item?.quantity) || 1) : 0);
+      }, 0);
+      if (netflixQuantity > 0) {
+        const { count: assignedCount, error: inventoryError } = await supabaseAdmin
+          .from("inventory")
+          .select("id", { count: "exact", head: true })
+          .eq("assigned_order_id", order_id)
+          .eq("is_used", true)
+          .ilike("service", "%netflix%");
+        if (inventoryError) return res.status(503).json({ error: "Impossible de vérifier l'attribution du stock." });
+        if ((assignedCount || 0) < netflixQuantity) {
+          return res.status(409).json({ error: "Impossible d'activer Netflix sans profil attribué." });
+        }
+      }
+      if (!manualActivationReady(currentOrder.items)) {
+        return res.status(409).json({ error: "Les identifiants Spotify ou Crunchyroll doivent être reçus avant l’activation." });
       }
     }
+    if (status === "completed" && currentOrder.payment_status !== "paid") {
+      return res.status(409).json({ error: "Impossible de terminer une commande dont le paiement n'est pas confirmé." });
+    }
 
-    const update: Record<string, string> = { status };
-    if (status === "cancelled" && currentOrder.payment_status === "unpaid") update.payment_status = "failed";
+    const update: Record<string, any> = { status };
+    if (status === "pending" && currentOrder.payment_status === "failed") update.payment_status = "unpaid";
+    if (status === "active") {
+      update.activated_at = currentOrder.activated_at || new Date().toISOString();
+      update.expires_at = currentOrder.expires_at || expiresAtFromItems(parseOrderItems(currentOrder.items));
+      update.completed_at = null;
+    }
+    if (status === "completed") update.completed_at = new Date().toISOString();
+    if (status === "cancelled" && currentOrder.payment_status !== "paid") update.payment_status = "failed";
     const { error: updateError } = await supabaseAdmin
       .from("orders")
       .update(update)
@@ -722,7 +781,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     const normalizedService = typeof service === "string" ? service.trim().toLowerCase() : "";
     const normalizedEmail = typeof email === "string" ? email.trim() : "";
     const normalizedPassword = typeof password === "string" ? password : "";
-    const normalizedWhatsapp = typeof whatsapp === "string" ? whatsapp.trim() : "";
+    const normalizedWhatsapp = typeof whatsapp === "string" ? normalizeAlgerianMobile(whatsapp.slice(0, 40)) : "";
     if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id) || !["spotify", "crunchyroll"].includes(normalizedService) || !normalizedEmail || !normalizedPassword || !normalizedWhatsapp || normalizedEmail.length > 254 || normalizedPassword.length > 256 || normalizedWhatsapp.length > 40) {
       return res.status(400).json({ error: "Données manquantes" });
     }
@@ -750,7 +809,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     }
 
     const { data: updated, error: updateError } = await supabaseAdmin.from("orders")
-      .update({ items: updatedItems })
+      .update({ items: updatedItems, customer_whatsapp: normalizedWhatsapp })
       .eq("order_id", order_id)
       .eq("assigned_email", userData.user.email)
       .eq("payment_status", "paid")
@@ -766,6 +825,11 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       {
         orderId: order_id,
         service: normalizedService,
+        credentials: {
+          email: normalizedEmail,
+          password: normalizedPassword,
+          whatsapp: normalizedWhatsapp,
+        },
       },
     );
 

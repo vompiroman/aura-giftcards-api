@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   adminOrderItems,
+  customerWhatsappFromItems,
+  manualActivationReady,
   setClientCredentials,
 } from "../../src/lib/orderItems";
 
@@ -54,5 +56,12 @@ describe("chiffrement des identifiants client", () => {
       password: "secret",
       whatsapp: "0555000000",
     });
+    expect(customerWhatsappFromItems(items)).toBe("0555000000");
+    expect(manualActivationReady(items)).toBe(true);
+  });
+
+  it("ne considère pas une activation manuelle prête sans identifiants", () => {
+    expect(manualActivationReady([{ name: "Spotify Family 1 an" }])).toBe(false);
+    expect(manualActivationReady([{ name: "Netflix Premium 1 mois" }])).toBe(true);
   });
 });

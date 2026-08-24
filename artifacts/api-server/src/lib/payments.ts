@@ -1,5 +1,36 @@
 export type SlickPayPaymentState = "paid" | "unpaid" | "failed" | "pending";
 
+export interface SlickPayInvoiceDetails {
+  state: SlickPayPaymentState;
+  amount: number | null;
+  payload: any;
+}
+
+function parseNestedData(payload: any): any {
+  if (typeof payload?.data !== "string") return payload?.data;
+  try {
+    return JSON.parse(payload.data);
+  } catch {
+    return null;
+  }
+}
+
+export function slickPayInvoiceDetails(payload: any): SlickPayInvoiceDetails {
+  const nested = parseNestedData(payload);
+  const normalized = nested && typeof nested === "object"
+    ? { ...payload, data: nested }
+    : payload;
+  const rawAmount = normalized?.data?.amount ?? normalized?.amount;
+  const amount = rawAmount === null || rawAmount === undefined || rawAmount === ""
+    ? Number.NaN
+    : Number(rawAmount);
+  return {
+    state: slickPayPaymentState(normalized),
+    amount: Number.isFinite(amount) ? amount : null,
+    payload: normalized,
+  };
+}
+
 export function durationMonthsFromItems(items: any[]): number {
   let maxMonths = 1;
 
