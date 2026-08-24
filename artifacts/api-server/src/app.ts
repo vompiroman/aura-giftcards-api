@@ -162,6 +162,12 @@ app.use("/api", router);
 
 app.use((err: any, req: any, res: any, next: any) => {
   if (res.headersSent) return next(err);
+  const parseError = err as SyntaxError & { type?: string; status?: number; statusCode?: number };
+  const malformedJson = err instanceof SyntaxError
+    && (parseError.type === "entity.parse.failed" || parseError.status === 400 || parseError.statusCode === 400);
+  if (malformedJson) {
+    return res.status(400).json({ error: "Corps JSON invalide." });
+  }
   req.log?.error({
     errorName: err instanceof Error ? err.name : "unknown",
     errorCode: typeof err?.code === "string" ? err.code : undefined,

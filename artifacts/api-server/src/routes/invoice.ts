@@ -144,6 +144,15 @@ function isAllowedPaymentUrl(value: unknown): value is string {
   }
 }
 
+function paymentUrlFromPayload(data: any): unknown {
+  return data?.url
+    ?? data?.data?.url
+    ?? data?.payment_url
+    ?? data?.data?.payment_url
+    ?? data?.redirect_url
+    ?? data?.data?.redirect_url;
+}
+
 function configuredSlickPayAccount(): string | null {
   const value = String(process.env.SLICKPAY_ACCOUNT_UUID || "").trim();
   if (!value) return null;
@@ -153,13 +162,7 @@ function configuredSlickPayAccount(): string | null {
 }
 
 function slickPayResponseSummary(data: any): Record<string, unknown> {
-  const rawUrl =
-    data?.url ??
-    data?.data?.url ??
-    data?.payment_url ??
-    data?.data?.payment_url ??
-    data?.redirect_url ??
-    data?.data?.redirect_url;
+  const rawUrl = paymentUrlFromPayload(data);
   let paymentHost: string | null = null;
   try {
     paymentHost = typeof rawUrl === "string" ? new URL(rawUrl).hostname : null;
@@ -267,6 +270,25 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
     }
 
     if (order.slickpay_invoice_id) {
+      try {
+        const existingInvoice = await fetchSlickPayInvoice(String(order.slickpay_invoice_id), 15_000);
+        const existingPaymentUrl = paymentUrlFromPayload(existingInvoice.payload);
+        if (isAllowedPaymentUrl(existingPaymentUrl)) {
+          res.json({
+            payment_url: existingPaymentUrl,
+            invoice_id: String(order.slickpay_invoice_id),
+            order_id: order.order_id,
+            amount: Number(order.amount),
+            reused: true,
+          });
+          return;
+        }
+      } catch (error) {
+        req.log?.warn({
+          orderId: order.order_id,
+          reason: (error as Error)?.name === "AbortError" ? "timeout" : "unavailable",
+        }, "Existing SlickPay invoice could not be reused");
+      }
       res.status(409).json({ error: "Un paiement a déjà été initialisé pour cette commande." });
       return;
     }
@@ -383,13 +405,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
     }
 
     const invoiceId = spData?.data?.id ?? spData?.id;
-    const paymentUrl =
-      spData?.url ??
-      spData?.data?.url ??
-      spData?.payment_url ??
-      spData?.data?.payment_url ??
-      spData?.redirect_url ??
-      spData?.data?.redirect_url;
+    const paymentUrl = paymentUrlFromPayload(spData);
 
     if (
       invoiceId === undefined ||

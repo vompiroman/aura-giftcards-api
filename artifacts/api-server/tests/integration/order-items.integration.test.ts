@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   adminOrderItems,
+  clearClientCredentials,
   customerWhatsappFromItems,
   manualActivationReady,
+  paidOrderAccessAvailable,
   setClientCredentials,
 } from "../../src/lib/orderItems";
 
@@ -60,8 +62,36 @@ describe("chiffrement des identifiants client", () => {
     expect(manualActivationReady(items)).toBe(true);
   });
 
+  it("supprime définitivement les secrets après activation tout en gardant la preuve de dépôt", () => {
+    process.env.CLIENT_CREDENTIALS_KEY = "dedicated-client-credentials-key-32-chars";
+    const items = setClientCredentials(
+      [{ name: "Spotify Family 1 an" }],
+      "spotify",
+      { email: "client@example.com", password: "secret", whatsapp: "0555000000" },
+    );
+    const cleared = clearClientCredentials(items, "2026-08-24T12:00:00.000Z");
+
+    expect(cleared[0].client_credentials).toBeUndefined();
+    expect(cleared[0].client_credentials_encrypted).toBeUndefined();
+    expect(cleared[0].client_credentials_submitted).toBe(true);
+    expect(cleared[0].client_credentials_deleted_at).toBe("2026-08-24T12:00:00.000Z");
+    expect(adminOrderItems(cleared)[0].client_credentials).toBeUndefined();
+    expect(adminOrderItems(cleared)[0].client_credentials_submitted).toBe(true);
+    expect(manualActivationReady(cleared)).toBe(true);
+  });
+
   it("ne considère pas une activation manuelle prête sans identifiants", () => {
     expect(manualActivationReady([{ name: "Spotify Family 1 an" }])).toBe(false);
     expect(manualActivationReady([{ name: "Netflix Premium 1 mois" }])).toBe(true);
+  });
+
+  it("autorise l'accès Netflix d'une commande mixte payée avant son activation manuelle", () => {
+    const now = Date.parse("2026-08-24T12:00:00.000Z");
+    expect(paidOrderAccessAvailable({ payment_status: "paid", status: "pending", expires_at: null }, now)).toBe(true);
+    expect(paidOrderAccessAvailable({ payment_status: "paid", status: "active", expires_at: "2026-09-24T12:00:00.000Z" }, now)).toBe(true);
+    expect(paidOrderAccessAvailable({ payment_status: "paid", status: "completed", expires_at: null }, now)).toBe(false);
+    expect(paidOrderAccessAvailable({ payment_status: "unpaid", status: "pending", expires_at: null }, now)).toBe(false);
+    expect(paidOrderAccessAvailable({ payment_status: "paid", status: "active", expires_at: "2026-08-23T12:00:00.000Z" }, now)).toBe(false);
+    expect(paidOrderAccessAvailable({ payment_status: "paid", status: "active", expires_at: "not-a-date" }, now)).toBe(false);
   });
 });
