@@ -44,6 +44,67 @@ import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 
 const router: IRouter = Router();
 const MARKETING_CONSENT_VERSION = "2026-07-26";
+const INVENTORY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const INVENTORY_EMAIL_RE = /^[^\s@]{1,64}@[A-Za-z0-9.-]{1,190}$/;
+const INVENTORY_SECRET_MAX = 512;
+
+function inventoryText(value: unknown, maxLength: number): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") throw Object.assign(new Error("Champ de stock invalide."), { statusCode: 400 });
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maxLength) {
+    throw Object.assign(new Error("Champ de stock invalide."), { statusCode: 400 });
+  }
+  return normalized;
+}
+
+function inventoryEmail(value: unknown): string {
+  const normalized = inventoryText(value, 255)?.toLowerCase() || "";
+  if (!INVENTORY_EMAIL_RE.test(normalized)) {
+    throw Object.assign(new Error("Adresse e-mail du compte invalide."), { statusCode: 400 });
+  }
+  return normalized;
+}
+
+function inventoryPassword(value: unknown, required: boolean): string | null {
+  if (value === null || value === undefined || value === "") {
+    if (required) throw Object.assign(new Error("Mot de passe du compte manquant."), { statusCode: 400 });
+    return null;
+  }
+  if (typeof value !== "string" || value.length > INVENTORY_SECRET_MAX) {
+    throw Object.assign(new Error("Mot de passe du compte invalide."), { statusCode: 400 });
+  }
+  return value;
+}
+
+function inventoryProfilePin(value: unknown): string | null {
+  const normalized = inventoryText(value, 8);
+  if (normalized && !/^\d{4,8}$/.test(normalized)) {
+    throw Object.assign(new Error("Le code PIN doit contenir entre 4 et 8 chiffres."), { statusCode: 400 });
+  }
+  return normalized;
+}
+
+function inventoryImapSettings(payload: any, accountEmail: string): {
+  imap_host: string | null;
+  imap_port: number;
+  imap_user: string | null;
+  imap_password: string | null;
+} {
+  const imapHost = inventoryText(payload?.imap_host, 255)?.toLowerCase() || null;
+  const imapPort = payload?.imap_port === undefined || payload?.imap_port === null || payload?.imap_port === ""
+    ? 993
+    : Number(payload.imap_port);
+  const imapUser = inventoryText(payload?.imap_user, 255);
+  const imapPassword = inventoryPassword(payload?.imap_password, false);
+  if (!Number.isInteger(imapPort) || imapPort !== 993) {
+    throw Object.assign(new Error("Le port IMAP sécurisé doit être 993."), { statusCode: 400 });
+  }
+  if (imapHost && !isAllowedImapTarget(imapHost, accountEmail, imapPort)) {
+    throw Object.assign(new Error("Serveur IMAP non autorisé."), { statusCode: 400 });
+  }
+  return { imap_host: imapHost, imap_port: imapPort, imap_user: imapUser, imap_password: imapPassword };
+}
 
 const createOrderLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -1099,10 +1160,27 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
 
     const { data, error } = await supabaseAdmin
       .from("inventory")
-      .select("id, service, account_email, is_used, assigned_order_id, created_at, profile_name, profile_pin")
+      .select("id, service, account_email, is_used, assigned_order_id, assigned_at, created_at, profile_name, profile_pin, imap_host, imap_port, imap_user, account_password, imap_password")
       .order("created_at", { ascending: false });
     if (error) throw error;
-    res.json({ inventory: data || [] });
+    res.json({
+      inventory: (data || []).map((item: any) => ({
+        id: item.id,
+        service: item.service,
+        account_email: item.account_email,
+        is_used: item.is_used,
+        assigned_order_id: item.assigned_order_id,
+        assigned_at: item.assigned_at,
+        created_at: item.created_at,
+        profile_name: item.profile_name,
+        profile_pin: item.profile_pin,
+        imap_host: item.imap_host,
+        imap_port: item.imap_port || 993,
+        imap_user: item.imap_user,
+        has_account_password: Boolean(item.account_password),
+        has_imap_password: Boolean(item.imap_password),
+      })),
+    });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
@@ -1119,42 +1197,40 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
-    const VALID_SERVICES = new Set(["netflix", "spotify", "crunchyroll"]);
     const MAX_BATCH = 100;
-
-    const validateEntry = (e: any): string | null => {
-      if (!e || typeof e !== "object") return "Entrée invalide.";
-      const svc = String(e.service || "").toLowerCase();
-      if (!VALID_SERVICES.has(svc)) return `Service inconnu: ${e.service}`;
-      if (!e.account_email || typeof e.account_email !== "string") return "Email manquant.";
-      if (svc !== "netflix" && !e.account_password) return "Mot de passe manquant pour ce service.";
-      return null;
-    };
 
     let rows: any[] = [];
     if (Array.isArray(req.body)) {
       if (req.body.length === 0) return res.status(400).json({ error: "Lot vide." });
       if (req.body.length > MAX_BATCH) return res.status(400).json({ error: `Maximum ${MAX_BATCH} comptes par lot.` });
-      for (const e of req.body) {
-        const err = validateEntry(e);
-        if (err) return res.status(400).json({ error: err });
-      }
       rows = req.body;
     } else {
-      const err = validateEntry(req.body);
-      if (err) return res.status(400).json({ error: err });
       rows = [req.body];
     }
 
-    const cleanRows = rows.map(r => ({
-      service: String(r.service).toLowerCase(),
-      account_email: r.account_email,
-      account_password: encryptInventorySecret(r.account_password),
-      imap_password: encryptInventorySecret(r.imap_password),
-      profile_name: r.profile_name ?? null,
-      profile_pin: r.profile_pin ?? null,
-      is_used: false,
-    }));
+    const cleanRows = rows.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        throw Object.assign(new Error("Entrée de stock invalide."), { statusCode: 400 });
+      }
+      if (String(entry.service || "netflix").trim().toLowerCase() !== "netflix") {
+        throw Object.assign(new Error("Seuls les profils Netflix sont gérés dans le stock automatique."), { statusCode: 400 });
+      }
+      const accountEmail = inventoryEmail(entry.account_email);
+      const accountPassword = inventoryPassword(entry.account_password, true);
+      const imap = inventoryImapSettings(entry, accountEmail);
+      return {
+        service: "netflix",
+        account_email: accountEmail,
+        account_password: encryptInventorySecret(accountPassword),
+        imap_host: imap.imap_host,
+        imap_port: imap.imap_port,
+        imap_user: imap.imap_user,
+        imap_password: encryptInventorySecret(imap.imap_password),
+        profile_name: inventoryText(entry.profile_name, 80),
+        profile_pin: inventoryProfilePin(entry.profile_pin),
+        is_used: false,
+      };
+    });
 
     const { error } = await supabaseAdmin.from("inventory").insert(cleanRows);
     if (error) throw error;
@@ -1167,12 +1243,15 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
     return res.status(201).json({ success: true, added: cleanRows.length });
   } catch (err: any) {
     req.log?.error({ code: err?.code }, "Admin inventory insert failed");
-    return res.status(500).json({ error: "Erreur serveur" });
+    return res.status(err?.statusCode === 400 ? 400 : 500).json({
+      error: err?.statusCode === 400 ? err.message : "Erreur serveur",
+    });
   }
 });
 
 router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
   try {
+    if (!INVENTORY_ID_RE.test(req.params.id)) return res.status(400).json({ error: "Identifiant de stock invalide." });
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
@@ -1215,6 +1294,7 @@ router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
 
 router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
   try {
+    if (!INVENTORY_ID_RE.test(req.params.id)) return res.status(400).json({ error: "Identifiant de stock invalide." });
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: "Token manquant" });
     const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
@@ -1224,16 +1304,47 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
-    const { account_email, account_password, imap_password, profile_name, profile_pin } = req.body;
-    const updates: any = {};
-    if (account_email !== undefined) updates.account_email = account_email;
-    if (account_password !== undefined) updates.account_password = encryptInventorySecret(account_password);
-    if (imap_password !== undefined) updates.imap_password = encryptInventorySecret(imap_password);
-    if (profile_name !== undefined) updates.profile_name = profile_name;
-    if (profile_pin !== undefined) updates.profile_pin = profile_pin;
+    const { data: existing, error: lookupError } = await supabaseAdmin
+      .from("inventory")
+      .select("id, service, account_email")
+      .eq("id", req.params.id)
+      .single();
+    if (lookupError || !existing) return res.status(404).json({ error: "Compte introuvable." });
+    if (String(existing.service).toLowerCase() !== "netflix") {
+      return res.status(409).json({ error: "Ce type de compte n'est plus géré dans le stock automatique." });
+    }
 
-    const { error } = await supabaseAdmin.from("inventory").update(updates).eq("id", req.params.id);
+    const { account_email, account_password, imap_password, profile_name, profile_pin, imap_host, imap_port, imap_user } = req.body || {};
+    const updates: any = {};
+    const normalizedEmail = account_email === undefined ? String(existing.account_email) : inventoryEmail(account_email);
+    if (account_email !== undefined) updates.account_email = normalizedEmail;
+    if (account_password !== undefined && account_password !== "") {
+      updates.account_password = encryptInventorySecret(inventoryPassword(account_password, true));
+    }
+    if (profile_name !== undefined) updates.profile_name = inventoryText(profile_name, 80);
+    if (profile_pin !== undefined) updates.profile_pin = inventoryProfilePin(profile_pin);
+
+    if ([imap_host, imap_port, imap_user, imap_password].some((value) => value !== undefined)) {
+      const imap = inventoryImapSettings(req.body, normalizedEmail);
+      updates.imap_host = imap.imap_host;
+      updates.imap_port = imap.imap_port;
+      updates.imap_user = imap.imap_user;
+      if (imap_password !== undefined && imap_password !== "") {
+        updates.imap_password = encryptInventorySecret(imap.imap_password);
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "Aucune modification valide." });
+    }
+
+    const { data: updated, error } = await supabaseAdmin
+      .from("inventory")
+      .update(updates)
+      .eq("id", req.params.id)
+      .select("id");
     if (error) throw error;
+    if (!updated?.length) return res.status(404).json({ error: "Compte introuvable." });
     void appendAuditLog({
       action: "admin_inventory_update",
       actorUserId: userData.user.id,
@@ -1242,8 +1353,73 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
       details: { fields: Object.keys(updates) },
     });
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur serveur" });
+  } catch (err: any) {
+    req.log?.error({ code: err?.code }, "Admin inventory update failed");
+    res.status(err?.statusCode === 400 ? 400 : 500).json({
+      error: err?.statusCode === 400 ? err.message : "Erreur serveur",
+    });
+  }
+});
+
+router.post("/admin/inventory/:id/test-mailbox", async (req, res): Promise<any> => {
+  if (!INVENTORY_ID_RE.test(req.params.id)) return res.status(400).json({ error: "Identifiant de stock invalide." });
+  try {
+    const authHeader = req.headers.authorization;
+    const token = /^Bearer\s+(.+)$/i.exec(authHeader || "")?.[1]?.trim() || "";
+    if (!token) return res.status(401).json({ error: "Token manquant" });
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
+      return res.status(403).json({ error: "Accès refusé." });
+    }
+
+    const { data: account, error } = await supabaseAdmin
+      .from("inventory")
+      .select("id, service, account_email, account_password, imap_host, imap_port, imap_user, imap_password")
+      .eq("id", req.params.id)
+      .single();
+    if (error || !account) return res.status(404).json({ error: "Compte introuvable." });
+
+    const strategy = resolveImapStrategy(account);
+    if (!strategy.host || !strategy.user || !strategy.pass) {
+      return res.status(400).json({ error: "Configuration IMAP incomplète." });
+    }
+    if (!isAllowedImapTarget(strategy.host, account.account_email, strategy.port)) {
+      return res.status(400).json({ error: "Serveur IMAP non autorisé." });
+    }
+
+    const client = new ImapFlow({
+      host: strategy.host,
+      port: strategy.port,
+      secure: true,
+      tls: { rejectUnauthorized: true },
+      auth: { user: strategy.user, pass: strategy.pass },
+      logger: false,
+      connectionTimeout: 10_000,
+      greetingTimeout: 5_000,
+      socketTimeout: 20_000,
+      clientInfo: { name: "AuraStream-Inventory-Test", version: "1.0.0" },
+    });
+    try {
+      await client.connect();
+      const mailbox = await client.status("INBOX", { messages: true });
+      void appendAuditLog({
+        action: "admin_inventory_mailbox_test",
+        actorUserId: userData.user.id,
+        targetType: "inventory",
+        targetId: req.params.id,
+        details: { result: "success", host: strategy.host },
+      });
+      return res.json({ ok: true, status: "healthy", messages: mailbox.messages ?? 0 });
+    } finally {
+      try { await client.logout(); } catch {}
+    }
+  } catch (err: any) {
+    req.log?.warn({ inventoryId: req.params.id, code: err?.code }, "Admin inventory mailbox test failed");
+    return res.status(502).json({
+      error: /AUTH|LOGIN|CREDENTIAL/i.test(String(err?.responseText || err?.message || ""))
+        ? "Connexion IMAP refusée. Vérifiez l’utilisateur et le mot de passe."
+        : "Connexion IMAP impossible. Vérifiez la configuration de la boîte mail.",
+    });
   }
 });
 

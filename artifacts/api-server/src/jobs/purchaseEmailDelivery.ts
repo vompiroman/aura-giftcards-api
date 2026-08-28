@@ -101,6 +101,10 @@ export async function runPurchaseEmailDelivery(
 
 export function schedulePurchaseEmailDeliveryInterval(): void {
   if (process.env.NODE_ENV === "test") return;
+  if (process.env.USE_EXTERNAL_CRON === "true") {
+    console.info("[email] External delivery cron enabled; in-process interval disabled.");
+    return;
+  }
   const run = () => {
     runPurchaseEmailDelivery().then((summary) => {
       if (summary.sent > 0 || summary.failed > 0) console.info("[email] Purchase delivery completed.", summary);

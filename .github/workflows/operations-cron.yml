@@ -1,0 +1,59 @@
+name: Payment and email reconciliation
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aura-production-operations
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      API_ORIGIN: ${{ secrets.PRODUCTION_API_ORIGIN }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+    steps:
+      - name: Validate production configuration
+        shell: bash
+        run: |
+          if [ -z "$API_ORIGIN" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::PRODUCTION_API_ORIGIN and CRON_SECRET must be configured."
+            exit 1
+          fi
+
+      - name: Reconcile SlickPay invoices
+        shell: bash
+        run: |
+          response="$(curl --fail-with-body --silent --show-error \
+            --retry 4 --retry-all-errors --retry-delay 15 \
+            --connect-timeout 20 --max-time 120 \
+            --request POST \
+            --header "x-cron-secret: ${CRON_SECRET}" \
+            "${API_ORIGIN%/}/api/cron/reconcile-payments")"
+          echo "$response" | jq .
+          if [ "$(echo "$response" | jq -r '.errors // 0')" -gt 0 ]; then
+            echo "::error::One or more SlickPay invoices could not be reconciled."
+            exit 1
+          fi
+
+      - name: Deliver queued purchase emails
+        shell: bash
+        run: |
+          response="$(curl --fail-with-body --silent --show-error \
+            --retry 4 --retry-all-errors --retry-delay 15 \
+            --connect-timeout 20 --max-time 120 \
+            --request POST \
+            --header "x-cron-secret: ${CRON_SECRET}" \
+            "${API_ORIGIN%/}/api/cron/deliver-emails")"
+          echo "$response" | jq .
+          if [ "$(echo "$response" | jq -r '.failed // 0')" -gt 0 ]; then
+            echo "::error::One or more purchase emails could not be delivered."
+            exit 1
+          fi
