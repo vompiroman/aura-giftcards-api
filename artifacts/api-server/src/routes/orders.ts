@@ -1426,11 +1426,14 @@ router.post("/admin/inventory/:id/test-mailbox", async (req, res): Promise<any> 
 router.get("/health/mailbox", async (req, res): Promise<any> => {
   try {
     const healthToken = process.env.HEALTH_TOKEN;
-    const authHeader = req.get("x-health-token") || req.get("authorization") || "";
-    const email = await getAuthedEmail(req);
-
-    if ((!healthToken || req.get("x-health-token") !== healthToken) && !isAdmin(email)) {
-      return res.status(404).end();
+    const healthTokenAccepted = Boolean(healthToken && req.get("x-health-token") === healthToken);
+    if (!healthTokenAccepted) {
+      const token = /^Bearer\s+(.+)$/i.exec(req.get("authorization") || "")?.[1]?.trim() || "";
+      if (!token) return res.status(404).end();
+      const { data, error } = await supabase.auth.getUser(token);
+      if (error || !data?.user?.email || !isAdmin(data.user.email, data.user.app_metadata)) {
+        return res.status(404).end();
+      }
     }
     await checkMailboxHealth();
     return res.json({ ok: true, status: "healthy" });
