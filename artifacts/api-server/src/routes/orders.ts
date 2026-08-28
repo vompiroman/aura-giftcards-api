@@ -23,6 +23,7 @@ import { notifyOperations } from "../lib/notifyOperations";
 import { summarizeAvailableStock } from "../lib/stockAlerts";
 import { appendAuditLog } from "../lib/auditLog";
 import { decryptInventorySecret, encryptInventorySecret } from "../lib/inventoryCredentials";
+import { isAllowedImapTarget, resolveImapStrategy } from "../lib/imapStrategy";
 import { buildAdminOrdersCsv } from "../lib/adminOrderExport";
 import {
   extractNetflixCode as extractTrustedNetflixCode,
@@ -888,73 +889,6 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
-
-function resolveImapStrategy(acc: {
-  account_email: string;
-  account_password?: string;
-  imap_host?: string;
-  imap_port?: number;
-  imap_user?: string;
-  imap_password?: string;
-}): { host: string; port: number; user: string; pass: string } {
-  const email = acc.account_email;
-  const domain = (email.toLowerCase().split('@')[1] || '');
-  const user = acc.imap_user || email;
-  const pass = decryptInventorySecret(acc.imap_password) || decryptInventorySecret(acc.account_password) || '';
-
-  if (acc.imap_host) {
-    return {
-      host: acc.imap_host,
-      port: acc.imap_port || 993,
-      user,
-      pass
-    };
-  }
-
-  // Support automatique pour le domaine Catch-All aura-stream.com (Hostinger)
-  if (domain === 'aura-stream.com') {
-    return {
-      host: 'imap.hostinger.com',
-      port: 993,
-      user: acc.imap_user || process.env.IMAP_ADMIN_USER || email,
-      pass: decryptInventorySecret(acc.imap_password) || process.env.DEFAULT_IMAP_PASSWORD || process.env.IMAP_ADMIN_PASS || ''
-    };
-  }
-
-  if (domain === 'gmail.com' || domain === 'googlemail.com') {
-    return { host: 'imap.gmail.com', port: 993, user, pass };
-  }
-
-  if (domain.startsWith('yahoo.')) {
-    return { host: 'imap.mail.yahoo.com', port: 993, user, pass };
-  }
-
-  const microsoft = ['outlook.fr','outlook.com','hotmail.fr','hotmail.com','hotmail.co.uk','live.fr','live.com','msn.com'];
-  if (microsoft.includes(domain)) {
-    return { host: 'outlook.office365.com', port: 993, user, pass };
-  }
-
-  // Unknown providers are rejected. Never derive a network target from database
-  // or user-controlled email data; that would create an SSRF primitive.
-  return { host: '', port: 993, user, pass };
-}
-
-function isAllowedImapTarget(host: string, email: string, port: number): boolean {
-  const normalizedHost = String(host || "").trim().toLowerCase().replace(/\.$/, "");
-  const allowed = new Set([
-    "imap.hostinger.com",
-    "imap.gmail.com",
-    "imap.mail.yahoo.com",
-    "outlook.office365.com",
-    "imap-mail.outlook.com",
-    ...(process.env.ALLOWED_IMAP_HOSTS || "")
-      .split(",")
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean),
-  ]);
-  return port === 993 && allowed.has(normalizedHost) && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(normalizedHost);
-}
-
 
 function recipientMatches(parsed: any, target: string): boolean {
   if (!target) return true;
