@@ -19,8 +19,8 @@ jobs:
         shell: bash
         run: |
           if [ -z "$API_ORIGIN" ] || [ -z "$CRON_SECRET" ]; then
-            echo "::warning::Configure PRODUCTION_API_ORIGIN and CRON_SECRET to enable stock alerts."
-            exit 0
+            echo "::error::PRODUCTION_API_ORIGIN and CRON_SECRET must be configured."
+            exit 1
           fi
           curl --fail-with-body --silent --show-error \
             --request POST \

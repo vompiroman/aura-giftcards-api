@@ -8,6 +8,7 @@ import { recordPaymentFailure } from "../lib/paymentAlerts";
 import { fetchSlickPayInvoice } from "../lib/slickpay";
 import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 import { runPaymentReconciliation } from "../jobs/paymentReconciliation";
+import { runPurchaseEmailDelivery } from "../jobs/purchaseEmailDelivery";
 import { observeSlickPayPayment } from "../lib/slickpayObservation";
 
 const router = Router();
@@ -559,6 +560,17 @@ router.post("/cron/reconcile-payments", async (req, res): Promise<any> => {
     return res.json(await runPaymentReconciliation(req.log));
   } catch {
     return res.status(503).json({ error: "Réconciliation indisponible." });
+  }
+});
+
+router.post("/cron/deliver-emails", async (req, res): Promise<any> => {
+  if (!process.env.CRON_SECRET) return res.status(503).json({ error: "CRON_SECRET non configuré." });
+  if (!validCronSecret(req.get("x-cron-secret"))) return res.status(401).json({ error: "Non autorisé" });
+
+  try {
+    return res.json(await runPurchaseEmailDelivery(req.log));
+  } catch {
+    return res.status(503).json({ error: "Livraison des e-mails indisponible." });
   }
 });
 
