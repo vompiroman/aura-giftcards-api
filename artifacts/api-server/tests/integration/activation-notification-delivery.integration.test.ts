@@ -63,7 +63,7 @@ describe("rattrapage des notifications d'activation", () => {
       errors: 0,
     });
     expect(notifyOperationsMock).toHaveBeenCalledWith(
-      expect.stringContaining("Rattrapage automatique"),
+      expect.stringContaining("Nouveau compte spotify payé"),
       expect.objectContaining({
         orderId: "ORD-retry-spotify",
         service: "spotify",

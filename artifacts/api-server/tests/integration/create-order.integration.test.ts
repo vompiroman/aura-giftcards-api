@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
 const { getUserMock, rpcMock, fromMock } = vi.hoisted(() => ({
@@ -14,8 +14,10 @@ vi.mock("../../src/lib/supabase", () => ({
 }));
 
 import app from "../../src/app";
+import { adminOrderItems } from "../../src/lib/orderItems";
 
 const VALID_TOKEN = "valid-test-token";
+const originalCredentialsKey = process.env.CLIENT_CREDENTIALS_KEY;
 
 function orderInsertStub() {
   const builder: Record<string, any> = {};
@@ -51,6 +53,12 @@ describe("POST /api/create-order", () => {
       error: null,
     });
     fromMock.mockReturnValue(orderInsertStub());
+    process.env.CLIENT_CREDENTIALS_KEY = "checkout-client-credentials-key-32-chars";
+  });
+
+  afterEach(() => {
+    if (originalCredentialsKey === undefined) delete process.env.CLIENT_CREDENTIALS_KEY;
+    else process.env.CLIENT_CREDENTIALS_KEY = originalCredentialsKey;
   });
 
   it("refuse une requête sans token", async () => {
@@ -97,7 +105,7 @@ describe("POST /api/create-order", () => {
       .post("/api/create-order")
       .set("Authorization", `Bearer ${VALID_TOKEN}`)
       .send({
-        items: [{ name: "Spotify Family 1 mois", quantity: 1 }],
+        items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
         marketing_consent: true,
         marketing_consent_version: "2026-07-26",
         marketing_consent_at: "2000-01-01T00:00:00.000Z",
@@ -139,7 +147,7 @@ describe("POST /api/create-order", () => {
       .post("/api/create-order")
       .set("Authorization", `Bearer ${VALID_TOKEN}`)
       .send({
-        items: [{ name: "Spotify Family 1 mois", quantity: 1 }],
+        items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
         marketing_consent: true,
         marketing_consent_version: "ancienne-version",
       });
@@ -163,6 +171,80 @@ describe("POST /api/create-order", () => {
       marketing_consent_at: null,
       consent_version: null,
     }));
+  });
+
+  it.each([
+    ["Spotify Family 1 mois", "Spotify"],
+    ["Crunchyroll Mega Fan 1 mois", "Crunchyroll"],
+  ])("exige les identifiants avant de créer une commande %s", async (product, service) => {
+    const builder = orderInsertStub();
+    fromMock.mockReturnValue(builder);
+
+    const res = await request(app)
+      .post("/api/create-order")
+      .set("Authorization", `Bearer ${VALID_TOKEN}`)
+      .send({
+        items: [{ name: product, quantity: 1 }],
+        customer_whatsapp: "+213555000000",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(service);
+    expect(builder.insert).not.toHaveBeenCalled();
+  });
+
+  it("chiffre les identifiants Spotify reçus avant le paiement", async () => {
+    const builder = orderInsertStub();
+    fromMock.mockReturnValue(builder);
+
+    const res = await request(app)
+      .post("/api/create-order")
+      .set("Authorization", `Bearer ${VALID_TOKEN}`)
+      .send({
+        items: [{ name: "Spotify Family 1 mois", quantity: 1 }],
+        customer_whatsapp: "+213 05 55 00 00 00",
+        activation_credentials: {
+          spotify: {
+            email: " Client.Spotify@Example.com ",
+            password: "temporary-secret",
+          },
+        },
+      });
+
+    expect(res.status).toBe(201);
+    const inserted = builder.insert.mock.calls[0][0];
+    expect(JSON.stringify(inserted.items)).not.toContain("temporary-secret");
+    expect(adminOrderItems(inserted.items)[0]).toMatchObject({
+      client_credentials_submitted: true,
+      client_credentials: {
+        email: "client.spotify@example.com",
+        password: "temporary-secret",
+        whatsapp: "+213555000000",
+      },
+    });
+  });
+
+  it("exige les deux comptes pour un panier Spotify et Crunchyroll", async () => {
+    const builder = orderInsertStub();
+    fromMock.mockReturnValue(builder);
+
+    const res = await request(app)
+      .post("/api/create-order")
+      .set("Authorization", `Bearer ${VALID_TOKEN}`)
+      .send({
+        items: [
+          { name: "Spotify Family 1 mois", quantity: 1 },
+          { name: "Crunchyroll Mega Fan 1 mois", quantity: 1 },
+        ],
+        customer_whatsapp: "+213555000000",
+        activation_credentials: {
+          spotify: { email: "spotify@example.com", password: "temporary" },
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Crunchyroll");
+    expect(builder.insert).not.toHaveBeenCalled();
   });
 
   it("retourne le montant serveur et les articles au propriétaire", async () => {

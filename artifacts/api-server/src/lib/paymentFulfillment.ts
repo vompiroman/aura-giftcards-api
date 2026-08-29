@@ -5,6 +5,7 @@ import { appendAuditLog } from "./auditLog";
 import { recordPaymentFailure, resetPaymentFailure } from "./paymentAlerts";
 import { clientPromoHash } from "./promos";
 import { expiresAtFromItems } from "./payments";
+import { deliverActivationNotificationsForOrder } from "../jobs/activationNotificationDelivery";
 
 export interface PayableOrder {
   order_id: string;
@@ -76,6 +77,13 @@ export async function fulfillVerifiedPayment(
         .is("meta_purchase_sent_at", null);
     }
   }
+
+  // Les identifiants sont collectés avant l'ouverture de SlickPay, mais ne
+  // quittent le stockage chiffré qu'après une confirmation de paiement fiable.
+  // Le cron de rattrapage renverra la notification si Discord est indisponible.
+  void deliverActivationNotificationsForOrder(order.order_id, order.items).catch((error) => {
+    console.warn("[activation] Immediate credential delivery failed.", { errorName: error?.name });
+  });
 
   const expiresAt = expiresAtFromItems(Array.isArray(order.items) ? order.items : []);
   const { data: assignment, error: assignmentError } = await supabaseAdmin.rpc("assign_inventory_for_order", {
