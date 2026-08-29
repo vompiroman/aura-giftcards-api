@@ -50,6 +50,40 @@ const MARKETING_CONSENT_VERSION = "2026-07-26";
 const INVENTORY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INVENTORY_EMAIL_RE = /^[^\s@]{1,64}@[A-Za-z0-9.-]{1,190}$/;
 const INVENTORY_SECRET_MAX = 512;
+const CLIENT_ACCOUNT_EMAIL_RE = /^[^\s@]{1,64}@[A-Za-z0-9.-]{1,190}$/;
+const MANUAL_ACTIVATION_SERVICES = ["spotify", "crunchyroll"] as const;
+
+type ManualActivationService = typeof MANUAL_ACTIVATION_SERVICES[number];
+
+function cartManualActivationServices(items: unknown): ManualActivationService[] {
+  if (!Array.isArray(items)) return [];
+  return MANUAL_ACTIVATION_SERVICES.filter((service) => items.some((item: any) => {
+    const name = String(item?.name || item?.service || "").toLowerCase();
+    return name.includes(service);
+  }));
+}
+
+function checkoutClientCredentials(
+  value: unknown,
+  service: ManualActivationService,
+  whatsapp: string,
+): { email: string; password: string; whatsapp: string } {
+  const candidate = value && typeof value === "object"
+    ? (value as Record<string, any>)[service]
+    : null;
+  const email = typeof candidate?.email === "string" ? candidate.email.trim().toLowerCase() : "";
+  const password = typeof candidate?.password === "string" ? candidate.password : "";
+  if (
+    !CLIENT_ACCOUNT_EMAIL_RE.test(email)
+    || email.length > 254
+    || password.length < 1
+    || password.length > 256
+    || !whatsapp
+  ) {
+    throw Object.assign(new Error(`Identifiants ${service === "spotify" ? "Spotify" : "Crunchyroll"} manquants ou invalides.`), { statusCode: 400 });
+  }
+  return { email, password, whatsapp };
+}
 
 function inventoryText(value: unknown, maxLength: number): string | null {
   if (value === null || value === undefined || value === "") return null;
@@ -125,7 +159,7 @@ function inventoryCanBeReleased(order: { status?: unknown; expires_at?: unknown 
 
 const createOrderLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 10,
+  max: process.env.NODE_ENV === "test" ? 100 : 10,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { xForwardedForHeader: false, default: false },
@@ -185,6 +219,30 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     const pricing = computeCart(items);
     if (!pricing.ok) {
       res.status(400).json({ error: pricing.error });
+      return;
+    }
+
+    const manualServices = cartManualActivationServices(pricing.cleanItems);
+    if (manualServices.length > 0 && !customerWhatsapp) {
+      res.status(400).json({ error: "Le numéro WhatsApp est requis pour une activation Spotify ou Crunchyroll." });
+      return;
+    }
+    let orderItems = pricing.cleanItems;
+    try {
+      for (const service of manualServices) {
+        orderItems = setClientCredentials(
+          orderItems,
+          service,
+          checkoutClientCredentials(req.body?.activation_credentials, service, customerWhatsapp || ""),
+        );
+      }
+    } catch (error: any) {
+      if (error?.statusCode === 400) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
+      req.log?.error({ errorName: error?.name }, "Unable to encrypt checkout activation credentials");
+      res.status(503).json({ error: "Le stockage sécurisé des identifiants n'est pas configuré." });
       return;
     }
 
@@ -249,7 +307,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     const { data: inserted, error: insertError } = await supabaseAdmin.from("orders").insert({
       order_id: orderId,
       assigned_email: email,
-      items: pricing.cleanItems,
+      items: orderItems,
       amount: finalAmount,
       subtotal_amount: pricing.amount,
       discount_amount: discountAmount,
