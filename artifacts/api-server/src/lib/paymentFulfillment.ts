@@ -30,42 +30,20 @@ export interface FulfillmentResult {
 
 export async function fulfillVerifiedPayment(
   order: PayableOrder,
-  source: "slickpay_return" | "slickpay_webhook" | "slickpay_reconcile" | "admin_manual",
-  options: { paymentTransitioned?: boolean } = {},
+  source: "slickpay_return" | "slickpay_webhook" | "slickpay_reconcile",
+  options: { paymentTransitioned: boolean },
 ): Promise<FulfillmentResult> {
   if (["active", "completed"].includes(order.status) && order.payment_status === "paid") {
     return { payment_status: "paid", order_status: order.status as "active" | "completed", idempotent: true };
   }
 
-  const usesAtomicProviderObservation = source !== "admin_manual";
-  if (usesAtomicProviderObservation && typeof options.paymentTransitioned !== "boolean") {
+  if (typeof options.paymentTransitioned !== "boolean") {
     throw new Error("SLICKPAY_OBSERVATION_REQUIRED");
   }
 
-  const wasAlreadyPaid = usesAtomicProviderObservation
-    ? options.paymentTransitioned !== true
-    : order.payment_status === "paid";
-  if (!usesAtomicProviderObservation && !wasAlreadyPaid) {
-    const { data: transitioned, error: transitionError } = await supabaseAdmin
-      .from("orders")
-      .update({ payment_status: "paid", status: "pending" })
-      .eq("order_id", order.order_id)
-      .in("payment_status", ["unpaid", "failed"])
-      .in("status", ["pending", "cancelled"])
-      .select("order_id");
-    if (transitionError) throw transitionError;
-    if (!transitioned?.length) {
-      const { data: current, error: currentError } = await supabaseAdmin
-        .from("orders")
-        .select("status, payment_status")
-        .eq("order_id", order.order_id)
-        .single();
-      if (currentError || current?.payment_status !== "paid") throw currentError || new Error("PAYMENT_TRANSITION_REJECTED");
-      if (["active", "completed"].includes(current.status)) {
-        return { payment_status: "paid", order_status: current.status, idempotent: true };
-      }
-    }
-  }
+  // Seule une observation atomique de l'API SlickPay peut faire passer une
+  // commande à paid. Il n'existe plus de chemin de confirmation manuelle.
+  const wasAlreadyPaid = options.paymentTransitioned !== true;
 
   if (order.promo_code_id) {
     const { data: reserved, error: reserveError } = await supabaseAdmin.rpc("reserve_promo_redemption", {

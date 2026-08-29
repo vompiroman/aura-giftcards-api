@@ -18,4 +18,26 @@ describe("normalisation des réponses SlickPay", () => {
     expect(details.state).toBe("paid");
     expect(details.amount).toBeNull();
   });
+
+  it("confirme une transaction SATIM terminée même si le reversement bancaire est en attente", () => {
+    const details = slickPayInvoiceDetails({
+      success: 1,
+      data: JSON.stringify({
+        status: "COMPLETED",
+        payment_status: "pending",
+        payout_status: "pending",
+        amount: 600,
+      }),
+    });
+
+    expect(details.state).toBe("paid");
+    expect(details.amount).toBe(600);
+  });
+
+  it("refuse toujours une transaction SATIM rejetée", () => {
+    const details = slickPayInvoiceDetails({
+      data: JSON.stringify({ status: "REJECTED", payment_status: "pending", amount: 600 }),
+    });
+    expect(details.state).toBe("failed");
+  });
 });

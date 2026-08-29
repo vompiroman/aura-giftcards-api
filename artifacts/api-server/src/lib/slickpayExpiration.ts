@@ -17,7 +17,7 @@ export interface SlickPayExpiration {
 
 export async function expireUnpaidSlickPayOrder(
   orderId: string,
-  invoiceId: string,
+  invoiceId: string | null,
   cutoff: string,
 ): Promise<SlickPayExpiration> {
   const { data, error } = await supabaseAdmin.rpc("expire_unpaid_slickpay_order", {

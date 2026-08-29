@@ -6,7 +6,7 @@ import { observeSlickPayPayment } from "../lib/slickpayObservation";
 import { expireUnpaidSlickPayOrder } from "../lib/slickpayExpiration";
 import { appendAuditLog } from "../lib/auditLog";
 
-const UNPAID_ORDER_RETENTION_MS = 24 * 60 * 60 * 1000;
+const UNPAID_ORDER_RETENTION_MS = 12 * 60 * 60 * 1000;
 const PAYMENT_CANDIDATE_LIMIT = 100;
 
 export interface PaymentReconciliationSummary {
@@ -27,7 +27,7 @@ let reconciliationRunning = false;
 
 type ReconciliationOrder = PayableOrder & {
   created_at: string;
-  slickpay_invoice_id: string;
+  slickpay_invoice_id: string | null;
 };
 
 const ORDER_COLUMNS = "order_id, assigned_email, amount, status, payment_status, promo_code_id, slickpay_invoice_id, items, marketing_consent, meta_purchase_sent_at, created_at";
@@ -50,7 +50,6 @@ async function loadPaymentCandidates(expirationCutoff: string): Promise<{
     .select(ORDER_COLUMNS)
     .in("status", ["pending", "cancelled"])
     .in("payment_status", ["unpaid", "failed"])
-    .not("slickpay_invoice_id", "is", null)
     .lte("created_at", expirationCutoff)
     .order("created_at", { ascending: true })
     .limit(PAYMENT_CANDIDATE_LIMIT);
@@ -72,7 +71,7 @@ async function recordExpiration(
 ): Promise<void> {
   const expiration = await expireUnpaidSlickPayOrder(
     order.order_id,
-    String(order.slickpay_invoice_id),
+    order.slickpay_invoice_id,
     expirationCutoff,
   );
   if (expiration.result === "deleted") {
@@ -82,7 +81,7 @@ async function recordExpiration(
       targetType: "order",
       targetId: order.order_id,
       details: {
-        reason: "slickpay_unpaid_after_24h",
+        reason: "unpaid_after_12h",
         provider_status: expiration.provider_status || "unknown",
       },
     });
@@ -109,7 +108,16 @@ async function processPaymentCandidate(
   summary: PaymentReconciliationSummary,
 ): Promise<void> {
   summary.checked += 1;
-  const invoiceId = String(order.slickpay_invoice_id);
+  const invoiceId = order.slickpay_invoice_id;
+
+  // Une commande sans facture externe est un panier abandonné. Une fois les
+  // 12 heures écoulées, la fonction SQL la supprime atomiquement uniquement
+  // si elle est toujours impayée et sans stock attribué.
+  if (!invoiceId) {
+    if (stale) await recordExpiration(order, expirationCutoff, summary);
+    else summary.pending += 1;
+    return;
+  }
 
   if (invoiceId.startsWith("pending:")) {
     if (stale) await recordExpiration(order, expirationCutoff, summary);

@@ -20,20 +20,28 @@ export function resolveImapStrategy(acc: InventoryMailboxAccount): ImapStrategy 
   const email = acc.account_email;
   const domain = email.toLowerCase().split("@")[1] || "";
   const configuredHost = String(acc.imap_host || "").trim().toLowerCase();
+  const globalHost = String(process.env.IMAP_HOST || process.env.IMAP_ADMIN_HOST || "")
+    .trim()
+    .toLowerCase();
+  const configuredPort = Number(process.env.IMAP_PORT || process.env.IMAP_ADMIN_PORT || 993);
+  const globalPort = Number.isInteger(configuredPort) && configuredPort === 993 ? configuredPort : 993;
   const isAuraHostingerMailbox = domain === "aura-stream.com"
-    && (!configuredHost || configuredHost === "imap.hostinger.com");
-  const user = acc.imap_user
-    || (isAuraHostingerMailbox ? process.env.IMAP_ADMIN_USER : "")
-    || email;
+    && (!configuredHost || configuredHost === "imap.hostinger.com" || configuredHost === globalHost);
+  // Chaque compte Aura Stream est une vraie sous-boîte Hostinger. Son adresse
+  // est donc aussi son identifiant IMAP, même si une ancienne ligne contient
+  // encore l'ancien utilisateur administrateur partagé.
+  const user = isAuraHostingerMailbox ? email : (acc.imap_user || email);
   const pass = decryptInventorySecret(acc.imap_password)
     || (isAuraHostingerMailbox ? (process.env.IMAP_ADMIN_PASS || process.env.DEFAULT_IMAP_PASSWORD) : "")
     || decryptInventorySecret(acc.account_password)
     || "";
 
+  if (isAuraHostingerMailbox) {
+    return { host: globalHost || "imap.hostinger.com", port: globalPort, user, pass };
+  }
   if (acc.imap_host) {
     return { host: acc.imap_host, port: acc.imap_port || 993, user, pass };
   }
-  if (domain === "aura-stream.com") return { host: "imap.hostinger.com", port: 993, user, pass };
   if (domain === "gmail.com" || domain === "googlemail.com") {
     return { host: "imap.gmail.com", port: 993, user, pass };
   }

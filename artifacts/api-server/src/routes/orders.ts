@@ -41,7 +41,6 @@ import {
 } from "../lib/promos";
 import { normalizeAlgerianMobile } from "../lib/phone";
 import { expiresAtFromItems } from "../lib/payments";
-import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 
 const router: IRouter = Router();
 const MARKETING_CONSENT_VERSION = "2026-07-26";
@@ -92,19 +91,10 @@ function inventoryImapSettings(payload: any, accountEmail: string): {
   imap_user: string | null;
   imap_password: string | null;
 } {
-  const imapHost = inventoryText(payload?.imap_host, 255)?.toLowerCase() || null;
-  const imapPort = payload?.imap_port === undefined || payload?.imap_port === null || payload?.imap_port === ""
-    ? 993
-    : Number(payload.imap_port);
-  const imapUser = inventoryText(payload?.imap_user, 255);
   const imapPassword = inventoryPassword(payload?.imap_password, false);
-  if (!Number.isInteger(imapPort) || imapPort !== 993) {
-    throw Object.assign(new Error("Le port IMAP sécurisé doit être 993."), { statusCode: 400 });
-  }
-  if (imapHost && !isAllowedImapTarget(imapHost, accountEmail, imapPort)) {
-    throw Object.assign(new Error("Serveur IMAP non autorisé."), { statusCode: 400 });
-  }
-  return { imap_host: imapHost, imap_port: imapPort, imap_user: imapUser, imap_password: imapPassword };
+  // L'hôte et le port sont une configuration d'infrastructure commune gérée
+  // dans Render. L'adresse du compte Netflix est sa sous-boîte Hostinger.
+  return { imap_host: null, imap_port: 993, imap_user: accountEmail, imap_password: imapPassword };
 }
 
 const createOrderLimiter = rateLimit({
@@ -662,8 +652,8 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
       return res.status(403).json({ error: "Accès refusé. Admin requis." });
     }
 
-    const { order_id, status, confirm_payment } = req.body;
-    if (!order_id || (!status && confirm_payment !== true)) return res.status(400).json({ error: "Action de commande manquante." });
+    const { order_id, status } = req.body;
+    if (!order_id || !status) return res.status(400).json({ error: "Action de commande manquante." });
     if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id)) {
       return res.status(400).json({ error: "Identifiant de commande invalide." });
     }
@@ -675,26 +665,6 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
       .eq("order_id", order_id)
       .single();
     if (currentOrderError || !currentOrder) return res.status(404).json({ error: "Commande introuvable." });
-
-    if (confirm_payment === true && currentOrder.payment_status !== "paid") {
-      const fulfillment = await fulfillVerifiedPayment(currentOrder, "admin_manual");
-      void appendAuditLog({
-        action: "admin_payment_confirmation",
-        actorUserId: userData.user.id,
-        targetType: "order",
-        targetId: order_id,
-        details: { previous_payment_status: currentOrder.payment_status },
-      });
-      const refreshed = await supabaseAdmin
-        .from("orders")
-        .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, expires_at, activated_at, marketing_consent, meta_purchase_sent_at")
-        .eq("order_id", order_id)
-        .single();
-      if (refreshed.error || !refreshed.data) throw refreshed.error || new Error("ORDER_REFRESH_FAILED");
-      currentOrder = refreshed.data;
-      if (!status) return res.json({ success: true, ...fulfillment });
-    }
-    if (!status) return res.json({ success: true, payment_status: currentOrder.payment_status, order_status: currentOrder.status, idempotent: true });
 
     if (status === "active" && currentOrder.payment_status !== "paid") {
       return res.status(409).json({ error: "Impossible d'activer une commande dont le paiement n'est pas confirmé." });
@@ -1108,9 +1078,6 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
         created_at: item.created_at,
         profile_name: item.profile_name,
         profile_pin: item.profile_pin,
-        imap_host: item.imap_host,
-        imap_port: item.imap_port || 993,
-        imap_user: item.imap_user,
         has_account_password: Boolean(item.account_password),
         has_imap_password: Boolean(item.imap_password),
       })),
@@ -1150,7 +1117,9 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
         throw Object.assign(new Error("Seuls les profils Netflix sont gérés dans le stock automatique."), { statusCode: 400 });
       }
       const accountEmail = inventoryEmail(entry.account_email);
-      const accountPassword = inventoryPassword(entry.account_password, true);
+      // Netflix est accessible par OTP envoyé à la sous-boîte. Le mot de
+      // passe du compte n'est donc qu'un ancien champ facultatif.
+      const accountPassword = inventoryPassword(entry.account_password, false);
       const imap = inventoryImapSettings(entry, accountEmail);
       return {
         service: "netflix",
@@ -1248,21 +1217,23 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
       return res.status(409).json({ error: "Ce type de compte n'est plus géré dans le stock automatique." });
     }
 
-    const { account_email, account_password, imap_password, profile_name, profile_pin, imap_host, imap_port, imap_user } = req.body || {};
+    const { account_email, account_password, imap_password, profile_name, profile_pin } = req.body || {};
     const updates: any = {};
     const normalizedEmail = account_email === undefined ? String(existing.account_email) : inventoryEmail(account_email);
-    if (account_email !== undefined) updates.account_email = normalizedEmail;
+    if (account_email !== undefined) {
+      updates.account_email = normalizedEmail;
+      updates.imap_host = null;
+      updates.imap_port = 993;
+      updates.imap_user = normalizedEmail;
+    }
     if (account_password !== undefined && account_password !== "") {
       updates.account_password = encryptInventorySecret(inventoryPassword(account_password, true));
     }
     if (profile_name !== undefined) updates.profile_name = inventoryText(profile_name, 80);
     if (profile_pin !== undefined) updates.profile_pin = inventoryProfilePin(profile_pin);
 
-    if ([imap_host, imap_port, imap_user, imap_password].some((value) => value !== undefined)) {
+    if (imap_password !== undefined) {
       const imap = inventoryImapSettings(req.body, normalizedEmail);
-      updates.imap_host = imap.imap_host;
-      updates.imap_port = imap.imap_port;
-      updates.imap_user = imap.imap_user;
       if (imap_password !== undefined && imap_password !== "") {
         updates.imap_password = encryptInventorySecret(imap.imap_password);
       }
