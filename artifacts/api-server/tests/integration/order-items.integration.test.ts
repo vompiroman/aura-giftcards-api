@@ -4,6 +4,7 @@ import {
   clearClientCredentials,
   customerWhatsappFromItems,
   manualActivationReady,
+  markClientCredentialsNotified,
   paidOrderAccessAvailable,
   setClientCredentials,
 } from "../../src/lib/orderItems";
@@ -60,6 +61,14 @@ describe("chiffrement des identifiants client", () => {
     });
     expect(customerWhatsappFromItems(items)).toBe("0555000000");
     expect(manualActivationReady(items)).toBe(true);
+
+    const notified = markClientCredentialsNotified(items, "crunchyroll", "2026-08-29T12:00:00.000Z");
+    expect(notified[0].client_credentials_notification_sent_at).toBe("2026-08-29T12:00:00.000Z");
+    expect(adminOrderItems(notified)[0].client_credentials).toEqual({
+      email: "client@example.com",
+      password: "secret",
+      whatsapp: "0555000000",
+    });
   });
 
   it("supprime définitivement les secrets après activation tout en gardant la preuve de dépôt", () => {

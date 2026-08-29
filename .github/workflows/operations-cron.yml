@@ -1,4 +1,4 @@
-name: Payment and email reconciliation
+name: Payment, activation and email reconciliation
 
 on:
   schedule:
@@ -57,3 +57,29 @@ jobs:
             echo "::error::One or more purchase emails could not be delivered."
             exit 1
           fi
+
+      - name: Retry queued activation notifications
+        shell: bash
+        run: |
+          response="$(curl --fail-with-body --silent --show-error \
+            --retry 4 --retry-all-errors --retry-delay 15 \
+            --connect-timeout 20 --max-time 120 \
+            --request POST \
+            --header "x-cron-secret: ${CRON_SECRET}" \
+            "${API_ORIGIN%/}/api/cron/retry-activation-notifications")"
+          echo "$response" | jq .
+          if [ "$(echo "$response" | jq -r '.errors // 0')" -gt 0 ]; then
+            echo "::error::One or more Discord activation notifications remain queued."
+            exit 1
+          fi
+
+      - name: Verify OTP mailbox and operations webhook
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --retry 2 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 20 --max-time 120 \
+            --request POST \
+            --header "x-cron-secret: ${CRON_SECRET}" \
+            "${API_ORIGIN%/}/api/cron/verify-integrations" | jq .

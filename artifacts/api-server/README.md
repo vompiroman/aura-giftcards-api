@@ -87,3 +87,17 @@ Après le passage d'une commande à `paid`, le serveur envoie un e-mail de confi
 Resend est prioritaire lorsqu'une clé est présente ; sinon le serveur utilise SMTP. Le même transport envoie les confirmations d'achat et les liens de récupération générés côté serveur par Supabase Admin. Les identifiants d'activation Spotify/Crunchyroll ne sont jamais inclus dans l'e-mail ni dans la facture.
 
 Le modèle `supabase/templates/recovery.html` reste versionné comme solution de repli si l'envoi est un jour redirigé vers le SMTP natif de Supabase.
+
+## Codes OTP Netflix et activations manuelles
+
+Les adresses `aurastreamXX@aura-stream.com` sont traitées comme des sous-adresses de la boîte centrale Hostinger. Le stock Netflix ne contient donc que l'adresse concernée, le profil et le PIN. Configure sur Render :
+
+| Variable | Description |
+|---|---|
+| `IMAP_ADMIN_HOST` | Serveur IMAP central, normalement `imap.hostinger.com` |
+| `IMAP_ADMIN_PORT` | Port TLS, obligatoirement `993` |
+| `IMAP_ADMIN_USER` | Adresse complète de la boîte centrale qui reçoit les messages des sous-adresses |
+| `IMAP_ADMIN_PASS` | Mot de passe secret de cette boîte centrale |
+| `DISCORD_WEBHOOK_URL` | Webhook privé qui reçoit les identifiants Spotify/Crunchyroll à activer |
+
+Le workflow `operations-cron.yml` retente toutes les cinq minutes les notifications d'activation qui n'ont pas été confirmées par Discord. Un lancement manuel du workflow vérifie également la connexion IMAP centrale et envoie un message de test sans données client réelles dans le canal opérationnel.
