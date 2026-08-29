@@ -188,8 +188,7 @@ export async function runPaymentReconciliation(
 export function schedulePaymentReconciliationInterval(): void {
   if (process.env.NODE_ENV === "test") return;
   if (process.env.USE_EXTERNAL_CRON === "true") {
-    console.info("[payments] External reconciliation cron enabled; in-process interval disabled.");
-    return;
+    console.info("[payments] External reconciliation cron enabled; in-process safety interval also active.");
   }
 
   const run = () => {

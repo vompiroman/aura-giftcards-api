@@ -46,9 +46,20 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
     const receivedSecret = req.headers["x-webhook-secret"]
       ?? req.headers["x-slickpay-signature"]
       ?? req.body?.webhook_signature
+      ?? req.body?.data?.webhook_signature
       ?? req.body?.signature;
-    if (!validSecret(receivedSecret)) {
+    const receivedExplicitSecret = webhookScalar(receivedSecret);
+    const signatureVerified = validSecret(receivedSecret);
+    if (receivedExplicitSecret && !signatureVerified) {
       return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // SlickPay does not consistently echo webhook_signature in production.
+    // An unsigned callback is treated only as a wake-up signal: no status or
+    // amount from its body is trusted. The invoice is always re-fetched from
+    // SlickPay with our server-side API key before any payment transition.
+    if (!signatureVerified) {
+      console.warn("Webhook received without a verifiable signature; revalidating with SlickPay.");
     }
 
     const metadata = webhookMetadata(req.body);
@@ -57,6 +68,7 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
       req.body?.invoice_id
       ?? req.body?.id
       ?? invoiceObject?.id
+      ?? req.body?.data?.invoice?.id
       ?? req.body?.invoice
       ?? req.body?.data?.invoice_id
       ?? req.body?.data?.id
@@ -78,7 +90,7 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
       return res.status(200).json({ received: true });
     }
 
-    if (orderIdParam && orderIdParam !== order.order_id) {
+    if (signatureVerified && orderIdParam && orderIdParam !== order.order_id) {
       return res.status(400).json({ error: "Références incohérentes" });
     }
 
