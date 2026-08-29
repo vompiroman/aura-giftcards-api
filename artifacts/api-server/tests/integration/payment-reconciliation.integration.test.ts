@@ -128,7 +128,7 @@ describe("SlickPay payment reconciliation", () => {
     );
   });
 
-  it("supprime après 24 h une facture que SlickPay confirme encore impayée", async () => {
+  it("supprime après 12 h une facture que SlickPay confirme encore impayée", async () => {
     const staleOrder = { ...order, created_at: "2026-08-20T00:00:00.000Z" };
     prepareQueries([], [staleOrder]);
     const provider = { state: "unpaid", amount: 800 };
@@ -145,13 +145,16 @@ describe("SlickPay payment reconciliation", () => {
     expect(summary).toEqual({ checked: 1, confirmed: 0, pending: 0, expired: 1, errors: 0 });
     expect(observeMock).toHaveBeenCalledWith(order.order_id, order.slickpay_invoice_id, provider);
     expect(expireMock).toHaveBeenCalledWith(order.order_id, order.slickpay_invoice_id, expect.any(String));
+    const cutoff = String(expireMock.mock.calls[0]?.[2] || "");
+    expect(Date.now() - new Date(cutoff).getTime()).toBeGreaterThanOrEqual(12 * 60 * 60 * 1000);
+    expect(Date.now() - new Date(cutoff).getTime()).toBeLessThan(12 * 60 * 60 * 1000 + 5_000);
     expect(appendAuditLogMock).toHaveBeenCalledWith(expect.objectContaining({
       action: "order_auto_expiration",
       targetId: order.order_id,
     }));
   });
 
-  it("confirme au lieu de supprimer si le paiement arrive à la limite des 24 h", async () => {
+  it("confirme au lieu de supprimer si le paiement arrive à la limite des 12 h", async () => {
     const staleOrder = { ...order, created_at: "2026-08-20T00:00:00.000Z" };
     prepareQueries([], [staleOrder]);
     const provider = { state: "paid", amount: 800 };
@@ -181,7 +184,7 @@ describe("SlickPay payment reconciliation", () => {
     expect(expireMock).not.toHaveBeenCalled();
   });
 
-  it("supprime un verrou local abandonné après 24 h sans appeler SlickPay", async () => {
+  it("supprime un verrou local abandonné après 12 h sans appeler SlickPay", async () => {
     const staleClaim = {
       ...order,
       slickpay_invoice_id: "pending:1787000000000:test-claim",
@@ -196,6 +199,23 @@ describe("SlickPay payment reconciliation", () => {
     expect(fetchInvoiceMock).not.toHaveBeenCalled();
     expect(observeMock).not.toHaveBeenCalled();
     expect(expireMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("supprime après 12 h une commande abandonnée sans facture SlickPay", async () => {
+    const abandonedOrder = {
+      ...order,
+      slickpay_invoice_id: null,
+      created_at: "2026-08-20T00:00:00.000Z",
+    };
+    prepareQueries([], [abandonedOrder]);
+    expireMock.mockResolvedValue({ result: "deleted", provider_status: "no_invoice" });
+
+    const summary = await runPaymentReconciliation();
+
+    expect(summary).toEqual({ checked: 1, confirmed: 0, pending: 0, expired: 1, errors: 0 });
+    expect(fetchInvoiceMock).not.toHaveBeenCalled();
+    expect(observeMock).not.toHaveBeenCalled();
+    expect(expireMock).toHaveBeenCalledWith(order.order_id, null, expect.any(String));
   });
 
   it("respecte la protection atomique si la commande devient payée avant la suppression", async () => {

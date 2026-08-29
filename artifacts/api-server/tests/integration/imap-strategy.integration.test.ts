@@ -4,6 +4,8 @@ import { isAllowedImapTarget, resolveImapStrategy } from "../../src/lib/imapStra
 const originalAdminUser = process.env.IMAP_ADMIN_USER;
 const originalAdminPass = process.env.IMAP_ADMIN_PASS;
 const originalDefaultPass = process.env.DEFAULT_IMAP_PASSWORD;
+const originalImapHost = process.env.IMAP_HOST;
+const originalImapPort = process.env.IMAP_PORT;
 
 afterEach(() => {
   if (originalAdminUser === undefined) delete process.env.IMAP_ADMIN_USER;
@@ -12,12 +14,18 @@ afterEach(() => {
   else process.env.IMAP_ADMIN_PASS = originalAdminPass;
   if (originalDefaultPass === undefined) delete process.env.DEFAULT_IMAP_PASSWORD;
   else process.env.DEFAULT_IMAP_PASSWORD = originalDefaultPass;
+  if (originalImapHost === undefined) delete process.env.IMAP_HOST;
+  else process.env.IMAP_HOST = originalImapHost;
+  if (originalImapPort === undefined) delete process.env.IMAP_PORT;
+  else process.env.IMAP_PORT = originalImapPort;
 });
 
 describe("stratégie IMAP de l'inventaire", () => {
-  it("conserve le compte Hostinger partagé quand l'hôte est enregistré explicitement", () => {
+  it("utilise toujours la sous-boîte Aura comme identifiant IMAP", () => {
     process.env.IMAP_ADMIN_USER = "admin@aura-stream.com";
     process.env.DEFAULT_IMAP_PASSWORD = "shared-hostinger-secret";
+    process.env.IMAP_HOST = "imap.hostinger.com";
+    process.env.IMAP_PORT = "993";
 
     expect(resolveImapStrategy({
       account_email: "netflix01@aura-stream.com",
@@ -28,7 +36,7 @@ describe("stratégie IMAP de l'inventaire", () => {
     })).toEqual({
       host: "imap.hostinger.com",
       port: 993,
-      user: "admin@aura-stream.com",
+      user: "netflix01@aura-stream.com",
       pass: "shared-hostinger-secret",
     });
   });

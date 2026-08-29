@@ -61,11 +61,29 @@ export function expiresAtFromItems(items: any[]): string {
 }
 
 export function slickPayPaymentState(payload: any): SlickPayPaymentState {
+  // L'export SlickPay distingue le statut de la transaction SATIM du statut
+  // du reversement bancaire. Une transaction COMPLETED est encaissée même si
+  // le reversement vers le compte marchand est encore « en attente ».
+  const transactionStatus = String(
+    payload?.data?.transaction_status ??
+      payload?.transaction_status ??
+      payload?.data?.status ??
+      payload?.status ??
+      "",
+  )
+    .trim()
+    .toLowerCase();
+
+  if (["completed", "paid", "success", "successful"].includes(transactionStatus)) {
+    return "paid";
+  }
+  if (["rejected", "failed", "cancelled", "canceled", "declined", "expired"].includes(transactionStatus)) {
+    return "failed";
+  }
+
   const raw = String(
     payload?.data?.payment_status ??
       payload?.payment_status ??
-      payload?.data?.status ??
-      payload?.status ??
       payload?.data?.completed ??
       payload?.completed ??
       "",
