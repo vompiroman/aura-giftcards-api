@@ -146,7 +146,7 @@ describe("POST /api/webhook", () => {
     }));
   });
 
-  it("rejette un secret invalide sans effet de bord", async () => {
+  it("rejette un secret explicitement invalide sans effet de bord", async () => {
     const res = await request(app)
       .post("/api/webhook")
       .set("x-webhook-secret", "mauvais-secret")
@@ -155,6 +155,30 @@ describe("POST /api/webhook", () => {
     expect(res.status).toBe(401);
     expect(notifyAdminMock).not.toHaveBeenCalled();
     expect(rpcMock).not.toHaveBeenCalled();
+  });
+
+  it("traite un webhook sans signature comme un signal et revalide via SlickPay", async () => {
+    const res = await request(app)
+      .post("/api/webhook")
+      .send({ invoice_id: "INV-ORD-x", order_id: "ORD-body-non-fiable" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.activated).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(rpcMock).toHaveBeenCalledWith("observe_slickpay_payment", expect.objectContaining({
+      p_provider_status: "paid",
+      p_verified_amount: 800,
+    }));
+  });
+
+  it("accepte la forme imbriquée de l'identifiant de facture SlickPay", async () => {
+    const res = await request(app)
+      .post("/api/webhook")
+      .send({ data: { invoice: { id: "INV-ORD-x" } } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.activated).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("alerte l'admin sans activer quand le stock est épuisé", async () => {
