@@ -7,6 +7,7 @@ import { simpleParser } from "mailparser";
 import { computeCart } from "../config/prices";
 import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
 import { deliverPendingActivationNotifications } from "../jobs/activationNotificationDelivery";
+import { fulfillPaidOrdersWaitingForStock } from "../jobs/stockFulfillment";
 import { isAdmin, requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
 import {
   adminOrderItems,
@@ -97,6 +98,29 @@ function inventoryImapSettings(payload: any, accountEmail: string): {
   // L'hôte et le port sont une configuration d'infrastructure commune gérée
   // dans Render. L'adresse du compte Netflix est sa sous-boîte Hostinger.
   return { imap_host: null, imap_port: 993, imap_user: accountEmail, imap_password: imapPassword };
+}
+
+function inventoryProfileName(value: unknown): string {
+  const normalized = inventoryText(value, 80);
+  if (!normalized) {
+    throw Object.assign(new Error("Nom du profil Netflix manquant."), { statusCode: 400 });
+  }
+  return normalized;
+}
+
+function inventoryProfilePinRequired(value: unknown): string {
+  const normalized = inventoryProfilePin(value);
+  if (!normalized) {
+    throw Object.assign(new Error("Code PIN du profil Netflix manquant."), { statusCode: 400 });
+  }
+  return normalized;
+}
+
+function inventoryCanBeReleased(order: { status?: unknown; expires_at?: unknown } | undefined): boolean {
+  if (!order) return true;
+  if (["completed", "cancelled"].includes(String(order.status || "").toLowerCase())) return true;
+  const expiresAt = new Date(String(order.expires_at || "")).getTime();
+  return Number.isFinite(expiresAt) && expiresAt <= Date.now();
 }
 
 const createOrderLimiter = rateLimit({
@@ -1109,20 +1133,46 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
       .select("id, service, account_email, is_used, assigned_order_id, assigned_at, created_at, profile_name, profile_pin, imap_host, imap_port, imap_user, account_password, imap_password")
       .order("created_at", { ascending: false });
     if (error) throw error;
+
+    const assignedOrderIds = [...new Set((data || [])
+      .map((item: any) => String(item.assigned_order_id || ""))
+      .filter(Boolean))];
+    const orderById = new Map<string, { status: string; expires_at: string | null }>();
+    if (assignedOrderIds.length > 0) {
+      const { data: assignedOrders, error: assignedOrdersError } = await supabaseAdmin
+        .from("orders")
+        .select("order_id, status, expires_at")
+        .in("order_id", assignedOrderIds);
+      if (assignedOrdersError) throw assignedOrdersError;
+      for (const order of assignedOrders || []) {
+        orderById.set(String(order.order_id), {
+          status: String(order.status || ""),
+          expires_at: order.expires_at || null,
+        });
+      }
+    }
     res.json({
-      inventory: (data || []).map((item: any) => ({
-        id: item.id,
-        service: item.service,
-        account_email: item.account_email,
-        is_used: item.is_used,
-        assigned_order_id: item.assigned_order_id,
-        assigned_at: item.assigned_at,
-        created_at: item.created_at,
-        profile_name: item.profile_name,
-        profile_pin: item.profile_pin,
-        has_account_password: Boolean(item.account_password),
-        has_imap_password: Boolean(item.imap_password),
-      })),
+      inventory: (data || []).map((item: any) => {
+        const assignedOrder = item.assigned_order_id
+          ? orderById.get(String(item.assigned_order_id))
+          : undefined;
+        return {
+          id: item.id,
+          service: item.service,
+          account_email: item.account_email,
+          is_used: item.is_used,
+          assigned_order_id: item.assigned_order_id,
+          assigned_at: item.assigned_at,
+          created_at: item.created_at,
+          profile_name: item.profile_name,
+          profile_pin: item.profile_pin,
+          has_account_password: Boolean(item.account_password),
+          has_imap_password: Boolean(item.imap_password),
+          order_status: assignedOrder?.status || null,
+          order_expires_at: assignedOrder?.expires_at || null,
+          releasable: Boolean(item.is_used && item.assigned_order_id && inventoryCanBeReleased(assignedOrder)),
+        };
+      }),
     });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
@@ -1171,8 +1221,8 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
         imap_port: imap.imap_port,
         imap_user: imap.imap_user,
         imap_password: encryptInventorySecret(imap.imap_password),
-        profile_name: inventoryText(entry.profile_name, 80),
-        profile_pin: inventoryProfilePin(entry.profile_pin),
+        profile_name: inventoryProfileName(entry.profile_name),
+        profile_pin: inventoryProfilePinRequired(entry.profile_pin),
         is_used: false,
       };
     });
@@ -1185,12 +1235,100 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
       targetType: "inventory",
       details: { count: cleanRows.length, services: [...new Set(cleanRows.map((row) => row.service))] },
     });
-    return res.status(201).json({ success: true, added: cleanRows.length });
+    let stockReconciliation = null;
+    try {
+      stockReconciliation = await fulfillPaidOrdersWaitingForStock(req.log);
+    } catch (reconciliationError) {
+      req.log?.warn({ errorName: (reconciliationError as Error)?.name }, "Post-insert stock reconciliation failed");
+    }
+    return res.status(201).json({
+      success: true,
+      added: cleanRows.length,
+      stock_reconciliation: stockReconciliation,
+    });
   } catch (err: any) {
     req.log?.error({ code: err?.code }, "Admin inventory insert failed");
-    return res.status(err?.statusCode === 400 ? 400 : 500).json({
-      error: err?.statusCode === 400 ? err.message : "Erreur serveur",
+    if (err?.statusCode === 400) return res.status(400).json({ error: err.message });
+    if (err?.code === "23505") {
+      return res.status(409).json({ error: "Ce profil Netflix existe déjà dans le stock." });
+    }
+    if (err?.code === "23502" || err?.code === "23514") {
+      return res.status(409).json({ error: "Les informations du profil Netflix sont incomplètes ou incohérentes." });
+    }
+    return res.status(500).json({ error: "Impossible d'ajouter ce profil au stock." });
+  }
+});
+
+router.post("/admin/inventory/:id/release", requireAdmin, async (req: AuthedRequest, res): Promise<any> => {
+  const inventoryId = String(req.params.id || "");
+  if (!INVENTORY_ID_RE.test(inventoryId)) {
+    return res.status(400).json({ error: "Identifiant de stock invalide." });
+  }
+  if (req.body?.confirm_disconnected !== true) {
+    return res.status(400).json({ error: "Confirmez d'abord que l'ancien client a été déconnecté du profil." });
+  }
+
+  try {
+    const { data: item, error: lookupError } = await supabaseAdmin
+      .from("inventory")
+      .select("id, is_used, assigned_order_id")
+      .eq("id", inventoryId)
+      .single();
+    if (lookupError || !item) return res.status(404).json({ error: "Compte introuvable." });
+    if (!item.is_used || !item.assigned_order_id) {
+      return res.status(409).json({ error: "Ce profil est déjà disponible." });
+    }
+
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from("orders")
+      .select("order_id, status, expires_at")
+      .eq("order_id", item.assigned_order_id)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!inventoryCanBeReleased(order || undefined)) {
+      return res.status(409).json({ error: "L'abonnement lié à ce profil est encore actif." });
+    }
+
+    if (order && !["completed", "cancelled"].includes(String(order.status))) {
+      const { error: completionError } = await supabaseAdmin
+        .from("orders")
+        .update({ status: "completed", completed_at: new Date().toISOString() })
+        .eq("order_id", order.order_id);
+      if (completionError) throw completionError;
+    }
+
+    const { data: released, error: releaseError } = await supabaseAdmin
+      .from("inventory")
+      .update({
+        is_used: false,
+        assigned_order_id: null,
+        assigned_user_id: null,
+        assigned_at: null,
+      })
+      .eq("id", inventoryId)
+      .eq("is_used", true)
+      .eq("assigned_order_id", item.assigned_order_id)
+      .select("id");
+    if (releaseError) throw releaseError;
+    if (!released?.length) {
+      return res.status(409).json({ error: "Ce profil a déjà été modifié. Actualisez le stock." });
+    }
+
+    const stockReconciliation = await fulfillPaidOrdersWaitingForStock(req.log).catch((error) => {
+      req.log?.warn({ errorName: (error as Error)?.name }, "Post-release stock reconciliation failed");
+      return null;
     });
+    void appendAuditLog({
+      action: "admin_inventory_release",
+      actorUserId: req.adminUserId,
+      targetType: "inventory",
+      targetId: inventoryId,
+      details: { previous_order_id: item.assigned_order_id },
+    });
+    return res.json({ success: true, stock_reconciliation: stockReconciliation });
+  } catch (err: any) {
+    req.log?.error({ code: err?.code }, "Admin inventory release failed");
+    return res.status(503).json({ error: "Impossible de libérer ce profil pour le moment." });
   }
 });
 
@@ -1271,8 +1409,8 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
     if (account_password !== undefined && account_password !== "") {
       updates.account_password = encryptInventorySecret(inventoryPassword(account_password, true));
     }
-    if (profile_name !== undefined) updates.profile_name = inventoryText(profile_name, 80);
-    if (profile_pin !== undefined) updates.profile_pin = inventoryProfilePin(profile_pin);
+    if (profile_name !== undefined) updates.profile_name = inventoryProfileName(profile_name);
+    if (profile_pin !== undefined) updates.profile_pin = inventoryProfilePinRequired(profile_pin);
 
     if (imap_password !== undefined) {
       const imap = inventoryImapSettings(req.body, normalizedEmail);
@@ -1302,6 +1440,9 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
     res.json({ success: true });
   } catch (err: any) {
     req.log?.error({ code: err?.code }, "Admin inventory update failed");
+    if (err?.code === "23505") {
+      return res.status(409).json({ error: "Ce profil Netflix existe déjà dans le stock." });
+    }
     res.status(err?.statusCode === 400 ? 400 : 500).json({
       error: err?.statusCode === 400 ? err.message : "Erreur serveur",
     });
