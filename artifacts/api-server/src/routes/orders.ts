@@ -6,6 +6,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { computeCart } from "../config/prices";
 import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
+import { deliverPendingActivationNotifications } from "../jobs/activationNotificationDelivery";
 import { isAdmin, requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
 import {
   adminOrderItems,
@@ -17,6 +18,7 @@ import {
   parseOrderItems,
   publicOrderItems,
   setClientCredentials,
+  markClientCredentialsNotified,
 } from "../lib/orderItems";
 import { notifyAdmin } from "../lib/notifyAdmin";
 import { notifyOperations } from "../lib/notifyOperations";
@@ -841,7 +843,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
 
     const frontendUrl = (process.env.FRONTEND_URL || "https://aura-stream.netlify.app").replace(/\/$/, "");
     const validationLink = `${frontendUrl}/?admin=true`;
-    await notifyOperations(
+    const discordSent = await notifyOperations(
       `Nouveau compte ${normalizedService} à activer. Les identifiants temporaires sont disponibles dans ce canal opérationnel privé et dans le panneau sécurisé : ${validationLink}`,
       {
         orderId: order_id,
@@ -854,7 +856,47 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       },
     );
 
-    res.json({ success: true });
+    let notificationRecorded = false;
+    if (discordSent) {
+      const notifiedItems = markClientCredentialsNotified(updatedItems, normalizedService);
+      const { data: recorded } = await supabaseAdmin.from("orders")
+        .update({ items: notifiedItems })
+        .eq("order_id", order_id)
+        .eq("assigned_email", userData.user.email)
+        .eq("payment_status", "paid")
+        .eq("status", "pending")
+        .select("order_id");
+      notificationRecorded = Boolean(recorded?.length);
+    }
+
+    if (!discordSent || !notificationRecorded) {
+      await notifyAdmin(
+        "Les identifiants d'activation ont été enregistrés mais leur notification Discord opérationnelle doit être rattrapée.",
+        {
+          level: "warning",
+          orderId: order_id,
+          service: normalizedService,
+          dedupeKey: `activation-discord-pending-${order_id}-${normalizedService}`,
+        },
+      );
+    }
+    void appendAuditLog({
+      action: "client_activation_credentials_submitted",
+      actorUserId: userData.user.id,
+      targetType: "order",
+      targetId: order_id,
+      details: {
+        service: normalizedService,
+        discord_sent: discordSent,
+        delivery_recorded: notificationRecorded,
+      },
+    });
+
+    res.status(discordSent && notificationRecorded ? 200 : 202).json({
+      success: true,
+      notification_sent: discordSent,
+      notification_queued: !discordSent || !notificationRecorded,
+    });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
@@ -1358,6 +1400,42 @@ router.post("/cron/imap-cleanup", async (req, res): Promise<any> => {
   }
   res.status(202).json({ accepted: true });
   runCleanupCycle().catch((e) => console.error("[cleanup] Échec via endpoint :", e?.message || e));
+});
+
+router.post("/cron/retry-activation-notifications", async (req, res): Promise<any> => {
+  if (!process.env.CRON_SECRET) return res.status(503).json({ error: "CRON_SECRET non configuré." });
+  if (!validCronSecret(req.get("x-cron-secret"))) return res.status(401).json({ error: "Non autorisé" });
+  try {
+    return res.json(await deliverPendingActivationNotifications());
+  } catch (err: any) {
+    req.log?.error({ code: err?.code }, "Activation notification retry failed");
+    return res.status(500).json({ error: "Rattrapage des notifications impossible." });
+  }
+});
+
+router.post("/cron/verify-integrations", async (req, res): Promise<any> => {
+  if (!process.env.CRON_SECRET) return res.status(503).json({ error: "CRON_SECRET non configuré." });
+  if (!validCronSecret(req.get("x-cron-secret"))) return res.status(401).json({ error: "Non autorisé" });
+  try {
+    await checkMailboxHealth();
+    const discordOk = await notifyOperations(
+      "Test technique Aura Stream : la boîte OTP Netflix et le canal d'activation Spotify/Crunchyroll sont opérationnels. Aucun identifiant client réel n'est inclus dans ce test.",
+      {
+        orderId: `TEST-${Date.now()}`,
+        service: "spotify",
+        credentials: {
+          email: "test-activation@aura-stream.com",
+          password: "TEST-NE-PAS-UTILISER",
+          whatsapp: "+213500000000",
+        },
+      },
+    );
+    if (!discordOk) return res.status(502).json({ ok: false, mailbox: true, discord_operations: false });
+    return res.json({ ok: true, mailbox: true, discord_operations: true });
+  } catch (err: any) {
+    req.log?.warn({ code: err?.code }, "Integration verification failed");
+    return res.status(502).json({ ok: false, mailbox: false, discord_operations: false });
+  }
 });
 
 export default router;

@@ -99,6 +99,23 @@ export function setClientCredentials(
   });
 }
 
+export function markClientCredentialsNotified(
+  itemsValue: unknown,
+  service: string,
+  notifiedAt = new Date().toISOString(),
+): any[] {
+  const normalizedService = service.trim().toLowerCase();
+  return parseOrderItems(itemsValue).map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const name = String(item?.name || item?.service || "").toLowerCase();
+    if (!name.includes(normalizedService) || !item.client_credentials_encrypted) return item;
+    return {
+      ...item,
+      client_credentials_notification_sent_at: notifiedAt,
+    };
+  });
+}
+
 /**
  * Removes client secrets as soon as the manual activation is completed while
  * preserving a non-sensitive audit marker. This makes the UI promise that

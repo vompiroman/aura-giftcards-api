@@ -33,13 +33,24 @@ describe("webhook Discord opérationnel", () => {
     )).resolves.toBe(true);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://discord.example/operations",
+      "https://discord.example/operations?wait=true",
       expect.objectContaining({ method: "POST" }),
     );
     const payload = JSON.stringify(fetchMock.mock.calls[0][1]);
     expect(payload).toContain("secret@example.com");
     expect(payload).toContain("||temporary-password||");
     expect(payload).toContain("+213555000000");
+  });
+
+  it("retente les erreurs Discord transitoires", async () => {
+    process.env.DISCORD_WEBHOOK_URL = "https://discord.example/operations";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(notifyOperations("test")).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("ne bascule pas sur le webhook admin si le canal opérationnel manque", async () => {

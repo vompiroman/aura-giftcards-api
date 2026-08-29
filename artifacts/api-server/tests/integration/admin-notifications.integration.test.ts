@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { getUserMock, notifyAdminMock, notifyOperationsMock, fromMock } = vi.hoisted(() => ({
+const { appendAuditLogMock, getUserMock, notifyAdminMock, notifyOperationsMock, fromMock } = vi.hoisted(() => ({
+  appendAuditLogMock: vi.fn(),
   getUserMock: vi.fn(),
   notifyAdminMock: vi.fn(),
   notifyOperationsMock: vi.fn(),
   fromMock: vi.fn(),
 }));
 
+vi.mock("../../src/lib/auditLog", () => ({ appendAuditLog: appendAuditLogMock }));
 vi.mock("../../src/lib/notifyAdmin", () => ({ notifyAdmin: notifyAdminMock }));
 vi.mock("../../src/lib/notifyOperations", () => ({ notifyOperations: notifyOperationsMock }));
 vi.mock("../../src/lib/supabase", () => ({
@@ -71,6 +73,7 @@ describe("notifications administrateur", () => {
         payment_status: "paid",
         items: [{ name: "Spotify 1 mois" }],
       }))
+      .mockReturnValueOnce(updateStub())
       .mockReturnValueOnce(updateStub());
 
     const res = await request(app)
@@ -99,6 +102,46 @@ describe("notifications administrateur", () => {
           whatsapp: "+213555000000",
         },
       }),
+    );
+    expect(res.body).toMatchObject({
+      success: true,
+      notification_sent: true,
+      notification_queued: false,
+    });
+  });
+
+  it("met la notification Discord en file de rattrapage sans perdre les identifiants", async () => {
+    notifyOperationsMock.mockResolvedValue(false);
+    fromMock
+      .mockReturnValueOnce(selectSingleStub({
+        order_id: "ORD-spotify-queued",
+        assigned_email: "client@example.com",
+        status: "pending",
+        payment_status: "paid",
+        items: [{ name: "Spotify Family 1 mois" }],
+      }))
+      .mockReturnValueOnce(updateStub());
+
+    const res = await request(app)
+      .post("/api/client-credentials")
+      .set("Authorization", "Bearer valid-token")
+      .send({
+        order_id: "ORD-spotify-queued",
+        service: "spotify",
+        email: "spotify@example.com",
+        password: "secret",
+        whatsapp: "0555000000",
+      });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({
+      success: true,
+      notification_sent: false,
+      notification_queued: true,
+    });
+    expect(notifyAdminMock).toHaveBeenCalledWith(
+      expect.stringContaining("rattrapée"),
+      expect.objectContaining({ orderId: "ORD-spotify-queued", service: "spotify" }),
     );
   });
 

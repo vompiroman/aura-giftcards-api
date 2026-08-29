@@ -27,13 +27,22 @@ export function resolveImapStrategy(acc: InventoryMailboxAccount): ImapStrategy 
   const globalPort = Number.isInteger(configuredPort) && configuredPort === 993 ? configuredPort : 993;
   const isAuraHostingerMailbox = domain === "aura-stream.com"
     && (!configuredHost || configuredHost === "imap.hostinger.com" || configuredHost === globalHost);
-  // Chaque compte Aura Stream est une vraie sous-boîte Hostinger. Son adresse
-  // est donc aussi son identifiant IMAP, même si une ancienne ligne contient
-  // encore l'ancien utilisateur administrateur partagé.
-  const user = isAuraHostingerMailbox ? email : (acc.imap_user || email);
-  const pass = decryptInventorySecret(acc.imap_password)
-    || (isAuraHostingerMailbox ? (process.env.IMAP_ADMIN_PASS || process.env.DEFAULT_IMAP_PASSWORD) : "")
+  const rowImapPassword = decryptInventorySecret(acc.imap_password);
+  const sharedUser = String(process.env.IMAP_ADMIN_USER || "").trim();
+  const sharedPassword = process.env.IMAP_ADMIN_PASS || process.env.DEFAULT_IMAP_PASSWORD || "";
+
+  // Les adresses aurastreamXX sont des sous-boîtes/alias livrés dans la boîte
+  // centrale Hostinger. Elles servent à filtrer le destinataire du code OTP,
+  // mais ne sont pas nécessairement des identifiants IMAP autonomes. Quand la
+  // boîte centrale Render est configurée, elle doit donc être utilisée pour
+  // toutes les lignes de stock. Un secret propre à une vraie boîte reste pris
+  // en charge pour assurer la compatibilité avec d'anciens comptes.
+  const useSharedAuraMailbox = isAuraHostingerMailbox && Boolean(sharedUser && sharedPassword) && !rowImapPassword;
+  const user = useSharedAuraMailbox ? sharedUser : (acc.imap_user || email);
+  const pass = rowImapPassword
+    || (useSharedAuraMailbox ? sharedPassword : "")
     || decryptInventorySecret(acc.account_password)
+    || (isAuraHostingerMailbox ? sharedPassword : "")
     || "";
 
   if (isAuraHostingerMailbox) {

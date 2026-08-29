@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 describe("stratégie IMAP de l'inventaire", () => {
-  it("utilise toujours la sous-boîte Aura comme identifiant IMAP", () => {
+  it("utilise la boîte centrale Hostinger pour les alias Aura", () => {
     process.env.IMAP_ADMIN_USER = "admin@aura-stream.com";
     process.env.DEFAULT_IMAP_PASSWORD = "shared-hostinger-secret";
     process.env.IMAP_HOST = "imap.hostinger.com";
@@ -36,18 +36,36 @@ describe("stratégie IMAP de l'inventaire", () => {
     })).toEqual({
       host: "imap.hostinger.com",
       port: 993,
-      user: "netflix01@aura-stream.com",
+      user: "admin@aura-stream.com",
       pass: "shared-hostinger-secret",
     });
   });
 
   it("préfère un secret IMAP propre au compte", () => {
+    process.env.IMAP_ADMIN_USER = "admin@aura-stream.com";
     process.env.DEFAULT_IMAP_PASSWORD = "shared-hostinger-secret";
     expect(resolveImapStrategy({
       account_email: "netflix02@aura-stream.com",
       account_password: "netflix-password",
+      imap_user: "netflix02@aura-stream.com",
       imap_password: "per-account-secret",
-    }).pass).toBe("per-account-secret");
+    })).toMatchObject({
+      user: "netflix02@aura-stream.com",
+      pass: "per-account-secret",
+    });
+  });
+
+  it("retombe sur l'adresse du compte lorsque la boîte centrale est absente", () => {
+    delete process.env.IMAP_ADMIN_USER;
+    delete process.env.IMAP_ADMIN_PASS;
+    delete process.env.DEFAULT_IMAP_PASSWORD;
+    expect(resolveImapStrategy({
+      account_email: "netflix03@aura-stream.com",
+      account_password: "legacy-mailbox-password",
+    })).toMatchObject({
+      user: "netflix03@aura-stream.com",
+      pass: "legacy-mailbox-password",
+    });
   });
 
   it("refuse les cibles réseau non autorisées", () => {
