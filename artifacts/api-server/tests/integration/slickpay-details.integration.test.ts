@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { slickPayInvoiceDetails } from "../../src/lib/payments";
 
 describe("normalisation des réponses SlickPay", () => {
+  it.each([["1,000.00", 1000], ["1,100.00", 1100], ["12,345,678.90", 12345678.9], ["1,000", 1000]])(
+    "lit le montant avec séparateurs de milliers %s", (amount, expected) => {
+      expect(slickPayInvoiceDetails({ completed: 1, data: { amount } }).amount).toBe(expected);
+    },
+  );
   it.each(["Spotify Family 1 mois", "Crunchyroll Mega Fan 1 mois"])(
     "lit le montant de transaction imbriqué pour %s", (service) => {
       const details = slickPayInvoiceDetails({ success: 1, completed: 1, data: JSON.stringify({
@@ -21,7 +26,7 @@ describe("normalisation des réponses SlickPay", () => {
     expect(details.amount).toBe(1100);
   });
 
-  it.each([null, "", " ", true, false, {}, [], "NaN", "Infinity", -1])(
+  it.each([null, "", " ", true, false, {}, [], "NaN", "Infinity", -1, "10,00", "1,00.00", "1.000,00", "1e3", "1,000 DZD"])(
     "ne transforme pas un montant malformé (%j) en montant valide", (amount) => {
       expect(slickPayInvoiceDetails({ completed: 1, data: { transaction: { amount } } }).amount).toBeNull();
     },
