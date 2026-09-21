@@ -24,9 +24,13 @@ export function slickPayInvoiceDetails(payload: any): SlickPayInvoiceDetails {
   // Never substitute the local order amount: the provider must prove it.
   const rawAmount = normalized?.data?.amount ?? normalized?.data?.transaction?.amount
     ?? normalized?.amount ?? normalized?.transaction?.amount;
+  const amountText = typeof rawAmount === "string" ? rawAmount.trim() : "";
+  // Accept strict decimal amounts and grouped thousands, never arbitrary comma
+  // removal ("10,00" must not silently become 1000).
   const amount = typeof rawAmount === "number" ? rawAmount
-    : typeof rawAmount === "string" && /^\d+(?:\.\d+)?$/.test(rawAmount.trim())
-      ? Number(rawAmount.trim()) : Number.NaN;
+    : /^\d+(?:\.\d+)?$/.test(amountText) ? Number(amountText)
+    : /^\d{1,3}(?:,\d{3})+(?:\.\d{2})?$/.test(amountText)
+      ? Number(amountText.replace(/,/g, "")) : Number.NaN;
   return {
     state: slickPayPaymentState(normalized),
     amount: Number.isFinite(amount) && amount >= 0 ? amount : null,

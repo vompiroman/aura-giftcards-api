@@ -138,6 +138,10 @@ async function processPaymentCandidate(
     const inspect = (value: unknown, path = "response", depth = 0): void => {
       if (depth > 4 || Object.keys(fields).length >= 60) return;
       fields[path] = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+      if (path.endsWith(".amount") && typeof value === "string" && value.length <= 40) {
+        // Show separators without recording the financial value or other payload data.
+        fields[path] += `:${value.replace(/[0-9]/g, "#").replace(/[^#.,\s]/g, "?")}`;
+      }
       if (value && typeof value === "object") {
         for (const [key, child] of Object.entries(value).slice(0, 25)) {
           if (/^[a-z_0-9]{1,40}$/i.test(key)) inspect(child, `${path}.${key}`, depth + 1);
