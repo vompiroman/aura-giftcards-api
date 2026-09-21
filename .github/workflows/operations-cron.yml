@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      verify_integrations:
+        description: Send an explicit test notification to Discord and check the OTP mailbox
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,6 +26,7 @@ jobs:
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
     steps:
       - name: Validate production configuration
+        id: configuration
         shell: bash
         run: |
           if [ -z "$API_ORIGIN" ] || [ -z "$CRON_SECRET" ]; then
@@ -44,6 +50,7 @@ jobs:
           fi
 
       - name: Deliver queued purchase emails
+        if: ${{ !cancelled() && steps.configuration.outcome == 'success' }}
         shell: bash
         run: |
           response="$(curl --fail-with-body --silent --show-error \
@@ -59,6 +66,7 @@ jobs:
           fi
 
       - name: Retry queued activation notifications
+        if: ${{ !cancelled() && steps.configuration.outcome == 'success' }}
         shell: bash
         run: |
           response="$(curl --fail-with-body --silent --show-error \
@@ -74,7 +82,7 @@ jobs:
           fi
 
       - name: Verify OTP mailbox and operations webhook
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ !cancelled() && steps.configuration.outcome == 'success' && github.event_name == 'workflow_dispatch' && inputs.verify_integrations }}
         shell: bash
         run: |
           curl --fail-with-body --silent --show-error \

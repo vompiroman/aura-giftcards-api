@@ -41,6 +41,11 @@ export async function fetchSlickPayInvoice(
       headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
       signal: controller.signal,
     });
+    // Keep the upstream HTTP status even when its error page is HTML.
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`SLICKPAY_HTTP_${response.status}`);
+    }
     let body: any;
     if (response.body) {
       const text = await readBoundedText(response);
@@ -54,8 +59,10 @@ export async function fetchSlickPayInvoice(
     } else {
       throw new Error("SLICKPAY_EMPTY_RESPONSE");
     }
-    if (!response.ok) throw new Error(`SLICKPAY_HTTP_${response.status}`);
     return slickPayInvoiceDetails(body);
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("SLICKPAY_TIMEOUT");
+    throw error;
   } finally {
     clearTimeout(timeout);
   }

@@ -126,6 +126,59 @@ describe("sessions par cookies HttpOnly", () => {
     expect(cookieHeader(response).filter((value) => /aura_(access|refresh)=;/i.test(value)).length).toBe(2);
   });
 
+  it("restaure une session valide en une seule requête sans renouvellement", async () => {
+    const response = await request(app).post("/api/session").set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", "aura_access=valid-token").send({});
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ authenticated: true, user: { email: user.email } });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(getUserMock).toHaveBeenCalledTimes(1);
+    expect(refreshSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("ne contacte pas Supabase pour un visiteur anonyme", async () => {
+    const response = await request(app).post("/api/session").set("Origin", "https://www.aura-stream.com").send({});
+    expect(response.body).toEqual({ authenticated: false, user: null });
+    expect(getUserMock).not.toHaveBeenCalled();
+    expect(refreshSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("restaure directement avec le refresh cookie si le cookie d'accès a expiré", async () => {
+    refreshSessionMock.mockResolvedValue({ data: { user, session: {
+      access_token: "restored-access", refresh_token: "restored-refresh", expires_at: 1_900_000_000,
+    } }, error: null });
+    const response = await request(app).post("/api/session").set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", "aura_refresh=refresh-token-cookie-long-enough; aura_remember=1").send({});
+    expect(response.status).toBe(200);
+    expect(response.body.authenticated).toBe(true);
+    expect(response.body.access_token).toBeUndefined();
+    expect(response.body.refresh_token).toBeUndefined();
+    expect(getUserMock).not.toHaveBeenCalled();
+    expect(refreshSessionMock).toHaveBeenCalledTimes(1);
+    expect(cookieHeader(response).some(value => value.startsWith("aura_access=restored-access") && value.includes("HttpOnly"))).toBe(true);
+  });
+
+  it("conserve la session pendant une panne temporaire Supabase", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null }, error: { status: 503 } });
+    const response = await request(app).post("/api/session").set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", "aura_access=valid-token; aura_refresh=refresh-token-long-enough").send({});
+    expect(response.status).toBe(503);
+    expect(cookieHeader(response)).toEqual([]);
+    expect(refreshSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("renouvelle après un token expiré sans seconde requête du navigateur", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null }, error: { status: 401 } });
+    refreshSessionMock.mockResolvedValue({ data: { user, session: {
+      access_token: "restored-access", refresh_token: "restored-refresh", expires_at: 1_900_000_000,
+    } }, error: null });
+    const response = await request(app).post("/api/session").set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", "aura_access=expired-token; aura_refresh=refresh-token-long-enough").send({});
+    expect(response.status).toBe(200);
+    expect(response.body.authenticated).toBe(true);
+    expect(refreshSessionMock).toHaveBeenCalledTimes(1);
+  });
+
   it("bloque une requête mutante provenant d'une origine non autorisée", async () => {
     const response = await request(app)
       .post("/api/login")

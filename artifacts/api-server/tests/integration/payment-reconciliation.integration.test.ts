@@ -120,7 +120,7 @@ describe("SlickPay payment reconciliation", () => {
 
     const summary = await runPaymentReconciliation();
 
-    expect(summary).toEqual({ checked: 1, confirmed: 0, pending: 0, expired: 0, errors: 1 });
+    expect(summary).toEqual({ checked: 1, confirmed: 0, pending: 0, expired: 0, errors: 1, error_codes: { SLICKPAY_AMOUNT_MISMATCH: 1 } });
     expect(fulfillMock).not.toHaveBeenCalled();
     expect(notifyAdminMock).toHaveBeenCalledWith(
       expect.stringContaining("incohérent"),
@@ -180,7 +180,7 @@ describe("SlickPay payment reconciliation", () => {
 
     const summary = await runPaymentReconciliation({ warn: vi.fn() });
 
-    expect(summary).toEqual({ checked: 1, confirmed: 0, pending: 0, expired: 0, errors: 1 });
+    expect(summary).toEqual({ checked: 1, confirmed: 0, pending: 0, expired: 0, errors: 1, error_codes: { SLICKPAY_HTTP_503: 1 } });
     expect(expireMock).not.toHaveBeenCalled();
   });
 
