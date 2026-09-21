@@ -15,6 +15,7 @@ export interface PaymentReconciliationSummary {
   pending: number;
   expired: number;
   errors: number;
+  error_codes?: Record<string, number>;
   skipped?: boolean;
 }
 
@@ -106,6 +107,7 @@ async function processPaymentCandidate(
   stale: boolean,
   expirationCutoff: string,
   summary: PaymentReconciliationSummary,
+  log: ReconciliationLogger,
 ): Promise<void> {
   summary.checked += 1;
   const invoiceId = order.slickpay_invoice_id;
@@ -129,6 +131,21 @@ async function processPaymentCandidate(
   const observation = await observeSlickPayPayment(order.order_id, invoiceId, provider);
   if (["amount_missing", "amount_mismatch"].includes(observation.result)) {
     summary.errors += 1;
+    const code = observation.result === "amount_missing" ? "SLICKPAY_AMOUNT_MISSING" : "SLICKPAY_AMOUNT_MISMATCH";
+    summary.error_codes ||= {};
+    summary.error_codes[code] = (summary.error_codes[code] || 0) + 1;
+    const fields: Record<string, string> = {};
+    const inspect = (value: unknown, path = "response", depth = 0): void => {
+      if (depth > 4 || Object.keys(fields).length >= 60) return;
+      fields[path] = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+      if (value && typeof value === "object") {
+        for (const [key, child] of Object.entries(value).slice(0, 25)) {
+          if (/^[a-z_0-9]{1,40}$/i.test(key)) inspect(child, `${path}.${key}`, depth + 1);
+        }
+      }
+    };
+    inspect(provider.payload);
+    log.warn?.({ orderId: order.order_id, code, providerFields: fields }, "SlickPay amount verification blocked");
     await notifyAdmin("Paiement SlickPay détecté mais montant absent ou incohérent pendant le rattrapage.", {
       level: "critical",
       orderId: order.order_id,
@@ -172,10 +189,19 @@ export async function runPaymentReconciliation(
     for (const [orders, stale] of [[candidates.recent, false], [candidates.stale, true]] as const) {
       for (const order of orders) {
         try {
-          await processPaymentCandidate(order, stale, expirationCutoff, summary);
+          await processPaymentCandidate(order, stale, expirationCutoff, summary, log);
         } catch (error) {
           summary.errors += 1;
-          log.warn?.({ orderId: order.order_id, errorName: (error as Error)?.name }, "Payment reconciliation item failed");
+          // Expose only known codes, never response bodies, credentials or
+          // arbitrary exception text in the authenticated cron response.
+          const message = error instanceof Error ? error.message : "";
+          const dbCode = String((error as { code?: unknown })?.code || "");
+          const code = /^SLICKPAY_[A-Z0-9_]+$/.test(message)
+            ? message
+            : /^[0-9A-Z]{5}$/.test(dbCode) ? `DATABASE_${dbCode}` : "PAYMENT_RECONCILIATION_ITEM_FAILED";
+          summary.error_codes ||= {};
+          summary.error_codes[code] = (summary.error_codes[code] || 0) + 1;
+          log.warn?.({ orderId: order.order_id, code }, "Payment reconciliation item failed");
         }
       }
     }

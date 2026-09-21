@@ -472,6 +472,44 @@ router.post("/logout", async (req, res) => {
   }
 });
 
+// Restore or refresh in one browser request. Anonymous visitors do not need
+// to make a failing /me request followed by a failing refresh request.
+router.post("/session", refreshLimiter, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    const token = accessTokenFromRequest(req);
+    if (token) {
+      const { data, error } = await supabase.auth.getUser(token);
+      if (!error && data?.user) {
+        return res.json({ authenticated: true, user: publicUser(data.user) });
+      }
+      if (error && (!error.status || error.status >= 500 || error.status === 429)) {
+        return res.status(503).json({ error: "Service d'authentification indisponible." });
+      }
+    }
+
+    const refreshToken = refreshTokenFromRequest(req);
+    if (!refreshToken) return res.json({ authenticated: false, user: null });
+    const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
+    if (error) {
+      if (!error.status || error.status >= 500 || error.status === 429) {
+        return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
+      }
+      // Do not clear cookies from a background response that might arrive
+      // after a newer login has already installed a fresh session.
+      return res.json({ authenticated: false, user: null });
+    }
+    if (!data.session?.access_token || !data.session.refresh_token || !data.user) {
+      return res.status(503).json({ error: "Connexion momentanément indisponible." });
+    }
+    setSessionCookies(res, data.session, rememberSessionFromRequest(req));
+    return res.json({ authenticated: true, expires_at: data.session.expires_at, user: publicUser(data.user) });
+  } catch (error) {
+    req.log.warn({ errorName: error instanceof Error ? error.name : "unknown" }, "Session restoration unavailable");
+    return res.status(503).json({ error: "Service d'authentification indisponible." });
+  }
+});
+
 router.get("/me", async (req, res) => {
   try {
     const token = accessTokenFromRequest(req);
