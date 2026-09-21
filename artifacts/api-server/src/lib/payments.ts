@@ -20,13 +20,16 @@ export function slickPayInvoiceDetails(payload: any): SlickPayInvoiceDetails {
   const normalized = nested && typeof nested === "object"
     ? { ...payload, data: nested }
     : payload;
-  const rawAmount = normalized?.data?.amount ?? normalized?.amount;
-  const amount = rawAmount === null || rawAmount === undefined || rawAmount === ""
-    ? Number.NaN
-    : Number(rawAmount);
+  // Completed production invoices include the charged amount under transaction.
+  // Never substitute the local order amount: the provider must prove it.
+  const rawAmount = normalized?.data?.amount ?? normalized?.data?.transaction?.amount
+    ?? normalized?.amount ?? normalized?.transaction?.amount;
+  const amount = typeof rawAmount === "number" ? rawAmount
+    : typeof rawAmount === "string" && /^\d+(?:\.\d+)?$/.test(rawAmount.trim())
+      ? Number(rawAmount.trim()) : Number.NaN;
   return {
     state: slickPayPaymentState(normalized),
-    amount: Number.isFinite(amount) ? amount : null,
+    amount: Number.isFinite(amount) && amount >= 0 ? amount : null,
     payload: normalized,
   };
 }
@@ -65,7 +68,9 @@ export function slickPayPaymentState(payload: any): SlickPayPaymentState {
   // du reversement bancaire. Une transaction COMPLETED est encaissée même si
   // le reversement vers le compte marchand est encore « en attente ».
   const transactionStatus = String(
-    payload?.data?.transaction_status ??
+    payload?.data?.transaction?.status ??
+      payload?.transaction?.status ??
+      payload?.data?.transaction_status ??
       payload?.transaction_status ??
       payload?.data?.status ??
       payload?.status ??
@@ -79,6 +84,9 @@ export function slickPayPaymentState(payload: any): SlickPayPaymentState {
   }
   if (["rejected", "failed", "cancelled", "canceled", "declined", "expired"].includes(transactionStatus)) {
     return "failed";
+  }
+  if (payload?.data?.transaction?.status != null || payload?.transaction?.status != null) {
+    return ["unpaid", "0", "false"].includes(transactionStatus) ? "unpaid" : "pending";
   }
 
   const raw = String(
