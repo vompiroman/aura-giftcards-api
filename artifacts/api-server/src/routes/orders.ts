@@ -1390,46 +1390,40 @@ router.post("/admin/inventory/:id/release", requireAdmin, async (req: AuthedRequ
   }
 });
 
-router.delete("/admin/inventory/:id", async (req, res): Promise<any> => {
+router.delete("/admin/inventory/:id", requireAdmin, async (req: AuthedRequest, res): Promise<any> => {
+  const inventoryId = String(req.params.id || "");
+  if (!INVENTORY_ID_RE.test(inventoryId)) {
+    return res.status(400).json({ error: "Identifiant de stock invalide." });
+  }
+
   try {
-    if (!INVENTORY_ID_RE.test(req.params.id)) return res.status(400).json({ error: "Identifiant de stock invalide." });
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
-    if (!token) return res.status(401).json({ error: "Token manquant" });
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
-      return res.status(403).json({ error: "Accès refusé." });
-    }
-
-    const { data: existing, error: lookupError } = await supabaseAdmin
-      .from("inventory")
-      .select("id, is_used, assigned_order_id")
-      .eq("id", req.params.id)
-      .single();
-    if (lookupError || !existing) return res.status(404).json({ error: "Compte introuvable." });
-    if (existing.is_used || existing.assigned_order_id) {
-      return res.status(409).json({ error: "Ce compte est attribué et ne peut pas être supprimé." });
-    }
-
-    const { data: deleted, error } = await supabaseAdmin
-      .from("inventory")
-      .delete()
-      .eq("id", req.params.id)
-      .eq("is_used", false)
-      .is("assigned_order_id", null)
-      .select("id");
+    const { data, error } = await supabaseAdmin.rpc("delete_inactive_inventory_item", {
+      p_inventory_id: inventoryId,
+      p_confirm_disconnected: req.body?.confirm_disconnected === true,
+    });
     if (error) throw error;
-    if (!deleted?.length) return res.status(409).json({ error: "Ce compte n'est plus supprimable." });
+
+    const result = String(data?.result || "");
+    if (result === "not_found") return res.status(404).json({ error: "Compte introuvable." });
+    if (result === "confirmation_required") {
+      return res.status(409).json({ error: "Confirmez d'abord que l'ancien client a été déconnecté du profil." });
+    }
+    if (result === "assigned_active") {
+      return res.status(409).json({ error: "L'abonnement lié à ce profil est encore actif." });
+    }
+    if (result !== "deleted") throw Object.assign(new Error("Unexpected inventory deletion result"), { code: "INVENTORY_DELETE_RESULT" });
+
     void appendAuditLog({
       action: "admin_inventory_delete",
-      actorUserId: userData.user.id,
+      actorUserId: req.adminUserId,
       targetType: "inventory",
-      targetId: req.params.id,
+      targetId: inventoryId,
+      details: { previous_order_id: data?.previous_order_id || null },
     });
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur serveur" });
+  } catch (err: any) {
+    req.log?.error({ code: err?.code }, "Admin inventory deletion failed");
+    res.status(503).json({ error: "Impossible de supprimer ce compte du stock pour le moment." });
   }
 });
 
