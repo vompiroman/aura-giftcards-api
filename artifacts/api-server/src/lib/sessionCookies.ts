@@ -6,7 +6,9 @@ export const REFRESH_COOKIE_NAME = "aura_refresh";
 export const REMEMBER_COOKIE_NAME = "aura_remember";
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
-const ONE_YEAR_MS = 365 * 24 * ONE_HOUR_MS;
+// Refresh tokens are long-lived in Supabase. Keep the browser cookie long-lived
+// too, then let Auth revoke the session on logout, password changes, or policy.
+const TEN_YEARS_MS = 10 * 365 * 24 * ONE_HOUR_MS;
 
 const baseCookieOptions: CookieOptions = {
   httpOnly: true,
@@ -53,12 +55,16 @@ export function attachCookieAuthorization(req: Request, _res: Response, next: Ne
   next();
 }
 
-export function setSessionCookies(res: Response, session: Session, remember: boolean): void {
+type SessionCookiePayload = Pick<Session, "access_token" | "refresh_token"> & {
+  expires_at?: Session["expires_at"];
+};
+
+export function setSessionCookies(res: Response, session: SessionCookiePayload, remember: boolean): void {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const expiresInMs = session.expires_at
     ? Math.max(1_000, Math.min(ONE_HOUR_MS, (session.expires_at - nowSeconds) * 1_000))
     : ONE_HOUR_MS;
-  const persistent = remember ? { maxAge: ONE_YEAR_MS } : {};
+  const persistent = remember ? { maxAge: TEN_YEARS_MS } : {};
 
   res.cookie(ACCESS_COOKIE_NAME, session.access_token, {
     ...baseCookieOptions,

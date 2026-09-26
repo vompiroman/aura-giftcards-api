@@ -86,6 +86,17 @@ describe("sessions par cookies HttpOnly", () => {
     expect(response.body.user.email).toBe(user.email);
   });
 
+  it("rend la session persistante par défaut à la connexion", async () => {
+    const response = await request(app)
+      .post("/api/login")
+      .set("Origin", "https://www.aura-stream.com")
+      .send({ email: user.email, password: "mot-de-passe-fort-2026" });
+
+    expect(response.status).toBe(200);
+    expect(cookieHeader(response).some((value) => /^aura_refresh=/.test(value) && /Max-Age=315360000/i.test(value))).toBe(true);
+    expect(cookieHeader(response).some((value) => /^aura_remember=1/.test(value))).toBe(true);
+  });
+
   it("fait tourner le refresh token depuis le cookie et ne le renvoie pas au navigateur", async () => {
     refreshSessionMock.mockResolvedValue({
       data: {
@@ -134,6 +145,14 @@ describe("sessions par cookies HttpOnly", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(getUserMock).toHaveBeenCalledTimes(1);
     expect(refreshSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("convertit une ancienne session cookie en session persistante", async () => {
+    const response = await request(app).post("/api/session").set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", "aura_access=valid-token; aura_refresh=refresh-token-cookie-long-enough").send({});
+    expect(response.status).toBe(200);
+    expect(cookieHeader(response).some((value) => /^aura_refresh=/.test(value) && /Max-Age=315360000/i.test(value))).toBe(true);
+    expect(cookieHeader(response).some((value) => /^aura_remember=1/.test(value))).toBe(true);
   });
 
   it("ne contacte pas Supabase pour un visiteur anonyme", async () => {

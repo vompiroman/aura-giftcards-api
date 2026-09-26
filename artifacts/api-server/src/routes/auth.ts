@@ -5,6 +5,9 @@ import { isAdmin } from "../middleware/requireAdmin";
 import axios from "axios";
 import { appendAuditLog } from "../lib/auditLog";
 import {
+  ACCESS_COOKIE_NAME,
+  REFRESH_COOKIE_NAME,
+  REMEMBER_COOKIE_NAME,
   accessTokenFromRequest,
   clearSessionCookies,
   refreshTokenFromRequest,
@@ -163,7 +166,7 @@ router.post("/register", registrationLimiter, async (req, res) => {
     }
 
     if (data.session) {
-      setSessionCookies(res, data.session, false);
+      setSessionCookies(res, data.session, true);
     }
     res.status(201).json({
       authenticated: Boolean(data.session),
@@ -203,7 +206,9 @@ router.post("/login", loginLimiter, async (req, res) => {
       return;
     }
 
-    setSessionCookies(res, data.session, req.body?.remember === true);
+    // Persistent sessions are the default for the customer experience. A
+    // caller can still explicitly opt out on a shared or public device.
+    setSessionCookies(res, data.session, req.body?.remember !== false);
 
     res.json({
       message: "Connexion réussie.",
@@ -245,11 +250,7 @@ router.post("/refresh-session", refreshLimiter, async (req, res) => {
       return res.status(401).json({ error: "Session expirée. Reconnectez-vous." });
     }
 
-    setSessionCookies(
-      res,
-      data.session,
-      rememberSessionFromRequest(req) || req.body?.remember === true,
-    );
+    setSessionCookies(res, data.session, rememberSessionFromRequest(req) || req.body?.remember === true);
     return res.json({
       authenticated: true,
       expires_at: data.session.expires_at,
@@ -481,6 +482,19 @@ router.post("/session", refreshLimiter, async (req, res) => {
     if (token) {
       const { data, error } = await supabase.auth.getUser(token);
       if (!error && data?.user) {
+        // Upgrade sessions created before persistent cookies were enabled when
+        // the browser still has both HttpOnly tokens available.
+        const legacySession = Boolean(
+          req.cookies?.[ACCESS_COOKIE_NAME]
+          && req.cookies?.[REFRESH_COOKIE_NAME]
+          && !req.cookies?.[REMEMBER_COOKIE_NAME],
+        );
+        if (legacySession) {
+          setSessionCookies(res, {
+            access_token: token,
+            refresh_token: req.cookies[REFRESH_COOKIE_NAME],
+          }, true);
+        }
         return res.json({ authenticated: true, user: publicUser(data.user) });
       }
       if (error && (!error.status || error.status >= 500 || error.status === 429)) {
@@ -502,7 +516,7 @@ router.post("/session", refreshLimiter, async (req, res) => {
     if (!data.session?.access_token || !data.session.refresh_token || !data.user) {
       return res.status(503).json({ error: "Connexion momentanément indisponible." });
     }
-    setSessionCookies(res, data.session, rememberSessionFromRequest(req));
+    setSessionCookies(res, data.session, rememberSessionFromRequest(req) || !req.cookies?.[REMEMBER_COOKIE_NAME]);
     return res.json({ authenticated: true, expires_at: data.session.expires_at, user: publicUser(data.user) });
   } catch (error) {
     req.log.warn({ errorName: error instanceof Error ? error.name : "unknown" }, "Session restoration unavailable");
