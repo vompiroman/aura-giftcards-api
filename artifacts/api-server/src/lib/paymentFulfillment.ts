@@ -13,6 +13,7 @@ export interface PayableOrder {
   status: string;
   payment_status: string;
   promo_code_id?: string | null;
+  renewal_order_id?: string | null;
   items: any;
   amount: number;
   marketing_consent?: boolean | null;
@@ -85,7 +86,31 @@ export async function fulfillVerifiedPayment(
     console.warn("[activation] Immediate credential delivery failed.", { errorName: error?.name });
   });
 
-  const expiresAt = expiresAtFromItems(Array.isArray(order.items) ? order.items : []);
+  let renewalBaseDate: string | Date = new Date();
+  if (order.renewal_order_id) {
+    const { data: renewedOrder, error: renewedOrderError } = await supabaseAdmin
+      .from("orders")
+      .select("order_id, assigned_email, payment_status, status, expires_at")
+      .eq("order_id", order.renewal_order_id)
+      .maybeSingle();
+    const sameOwner = String(renewedOrder?.assigned_email || "").trim().toLowerCase()
+      === String(order.assigned_email || "").trim().toLowerCase();
+    if (
+      renewedOrderError
+      || !renewedOrder
+      || !sameOwner
+      || renewedOrder.payment_status !== "paid"
+      || !["active", "completed"].includes(String(renewedOrder.status))
+    ) {
+      throw new Error("RENEWAL_ORDER_INVALID");
+    }
+    renewalBaseDate = renewedOrder.expires_at || renewalBaseDate;
+  }
+
+  const expiresAt = expiresAtFromItems(
+    Array.isArray(order.items) ? order.items : [],
+    renewalBaseDate,
+  );
   const { data: assignment, error: assignmentError } = await supabaseAdmin.rpc("assign_inventory_for_order", {
     p_order_id: order.order_id,
     p_expires_at: expiresAt,

@@ -31,7 +31,7 @@ type ReconciliationOrder = PayableOrder & {
   slickpay_invoice_id: string | null;
 };
 
-const ORDER_COLUMNS = "order_id, assigned_email, amount, status, payment_status, promo_code_id, slickpay_invoice_id, items, marketing_consent, meta_purchase_sent_at, created_at";
+const ORDER_COLUMNS = "order_id, assigned_email, amount, status, payment_status, promo_code_id, renewal_order_id, slickpay_invoice_id, items, marketing_consent, meta_purchase_sent_at, created_at";
 
 async function loadPaymentCandidates(expirationCutoff: string): Promise<{
   recent: ReconciliationOrder[];

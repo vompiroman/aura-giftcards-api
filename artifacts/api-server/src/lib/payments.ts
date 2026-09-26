@@ -61,8 +61,10 @@ export function durationMonthsFromItems(items: any[]): number {
   return maxMonths;
 }
 
-export function expiresAtFromItems(items: any[]): string {
-  const expiresAt = new Date();
+export function expiresAtFromItems(items: any[], baseDate: string | Date = new Date()): string {
+  const parsedBase = baseDate instanceof Date ? new Date(baseDate) : new Date(baseDate);
+  const now = new Date();
+  const expiresAt = Number.isFinite(parsedBase.getTime()) && parsedBase > now ? parsedBase : now;
   expiresAt.setUTCMonth(expiresAt.getUTCMonth() + durationMonthsFromItems(items));
   return expiresAt.toISOString();
 }

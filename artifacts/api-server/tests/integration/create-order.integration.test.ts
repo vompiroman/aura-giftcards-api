@@ -45,6 +45,23 @@ function orderSelectStub(data: Record<string, unknown>) {
   return builder;
 }
 
+function renewalOrderSelectStub(data: Record<string, unknown> | null) {
+  const builder: Record<string, any> = {};
+  builder.select = vi.fn(() => builder);
+  builder.eq = vi.fn(() => builder);
+  builder.maybeSingle = vi.fn(async () => ({ data, error: null }));
+  return builder;
+}
+
+function countQueryStub(count: number) {
+  const builder: Record<string, any> = {};
+  builder.select = vi.fn(() => builder);
+  builder.eq = vi.fn(() => builder);
+  builder.ilike = vi.fn(() => builder);
+  builder.then = (resolve: (value: unknown) => unknown) => resolve({ count, error: null });
+  return builder;
+}
+
 describe("POST /api/create-order", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -137,6 +154,55 @@ describe("POST /api/create-order", () => {
     expect(builder.insert).toHaveBeenCalledWith(expect.objectContaining({
       customer_whatsapp: "+213555000000",
     }));
+  });
+
+  it("relie un renouvellement Netflix au profil déjà attribué du client", async () => {
+    const insertBuilder = orderInsertStub();
+    fromMock
+      .mockReturnValueOnce(renewalOrderSelectStub({
+        order_id: "ORD-renew-source",
+        assigned_email: "e2e-tester@exemple.com",
+        payment_status: "paid",
+        status: "active",
+        items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
+      }))
+      .mockReturnValueOnce(countQueryStub(1))
+      .mockReturnValueOnce(orderInsertStub())
+      .mockReturnValueOnce(insertBuilder);
+
+    const res = await request(app)
+      .post("/api/create-order")
+      .set("Authorization", `Bearer ${VALID_TOKEN}`)
+      .send({
+        items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
+        renewal_order_id: "ORD-renew-source",
+      });
+
+    expect(res.status).toBe(201);
+    expect(insertBuilder.insert).toHaveBeenCalledWith(expect.objectContaining({
+      renewal_order_id: "ORD-renew-source",
+    }));
+  });
+
+  it("refuse de renouveler le profil Netflix d'un autre client", async () => {
+    fromMock.mockReturnValueOnce(renewalOrderSelectStub({
+      order_id: "ORD-renew-source",
+      assigned_email: "other@example.com",
+      payment_status: "paid",
+      status: "active",
+      items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
+    }));
+
+    const res = await request(app)
+      .post("/api/create-order")
+      .set("Authorization", `Bearer ${VALID_TOKEN}`)
+      .send({
+        items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
+        renewal_order_id: "ORD-renew-source",
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("ne peut pas être renouvelée");
   });
 
   it("rejette une version de consentement inconnue", async () => {
