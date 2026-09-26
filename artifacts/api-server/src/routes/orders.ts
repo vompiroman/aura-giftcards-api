@@ -1351,15 +1351,19 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
       targetType: "inventory",
       details: { count: cleanRows.length, services: [...new Set(cleanRows.map((row) => row.service))] },
     });
+    const manualAssignment = req.body?.manual_assignment === true || req.body?.manual_assignment === "true";
     let stockReconciliation = null;
-    try {
-      stockReconciliation = await fulfillPaidOrdersWaitingForStock(req.log);
-    } catch (reconciliationError) {
-      req.log?.warn({ errorName: (reconciliationError as Error)?.name }, "Post-insert stock reconciliation failed");
+    if (!manualAssignment) {
+      try {
+        stockReconciliation = await fulfillPaidOrdersWaitingForStock(req.log);
+      } catch (reconciliationError) {
+        req.log?.warn({ errorName: (reconciliationError as Error)?.name }, "Post-insert stock reconciliation failed");
+      }
     }
     return res.status(201).json({
       success: true,
       added: cleanRows.length,
+      manual_assignment: manualAssignment,
       stock_reconciliation: stockReconciliation,
     });
   } catch (err: any) {
@@ -1372,6 +1376,151 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
       return res.status(409).json({ error: "Les informations du profil Netflix sont incomplètes ou incohérentes." });
     }
     return res.status(500).json({ error: "Impossible d'ajouter ce profil au stock." });
+  }
+});
+
+router.get("/admin/inventory/:id/assignment-options", requireAdmin, async (req: AuthedRequest, res): Promise<any> => {
+  const inventoryId = String(req.params.id || "");
+  if (!INVENTORY_ID_RE.test(inventoryId)) {
+    return res.status(400).json({ error: "Identifiant de stock invalide." });
+  }
+
+  try {
+    const { data: inventory, error: inventoryError } = await supabaseAdmin
+      .from("inventory")
+      .select("id, service, is_used, assigned_order_id")
+      .eq("id", inventoryId)
+      .single();
+    if (inventoryError || !inventory) return res.status(404).json({ error: "Compte introuvable." });
+    if (String(inventory.service || "").trim().toLowerCase() !== "netflix") {
+      return res.status(409).json({ error: "Seuls les profils Netflix peuvent être attribués manuellement." });
+    }
+    if (inventory.is_used || inventory.assigned_order_id) {
+      return res.status(409).json({ error: "Ce profil est déjà attribué." });
+    }
+
+    const { data: orders, error: ordersError } = await supabaseAdmin
+      .from("orders")
+      .select("order_id, assigned_email, status, payment_status, amount, items, created_at, expires_at, renewal_order_id")
+      .eq("status", "pending")
+      .eq("payment_status", "paid")
+      .order("created_at", { ascending: true })
+      .limit(200);
+    if (ordersError) throw ordersError;
+
+    const candidates = (orders || []).filter((order: any) => netflixQuantity(order.items) > 0);
+    const orderIds = candidates.map((order: any) => String(order.order_id));
+    const assignedByOrder = new Map<string, number>();
+    if (orderIds.length > 0) {
+      const { data: assignments, error: assignmentsError } = await supabaseAdmin
+        .from("inventory")
+        .select("assigned_order_id")
+        .eq("is_used", true)
+        .ilike("service", "%netflix%")
+        .in("assigned_order_id", orderIds);
+      if (assignmentsError) throw assignmentsError;
+      for (const assignment of assignments || []) {
+        const orderId = String(assignment.assigned_order_id || "");
+        assignedByOrder.set(orderId, (assignedByOrder.get(orderId) || 0) + 1);
+      }
+    }
+
+    return res.json({
+      inventory_id: inventoryId,
+      orders: candidates
+        .filter((order: any) => (assignedByOrder.get(String(order.order_id)) || 0) < netflixQuantity(order.items))
+        .map((order: any) => ({
+          order_id: order.order_id,
+          assigned_email: order.assigned_email,
+          amount: order.amount,
+          items: publicOrderItems(order.items),
+          created_at: order.created_at,
+          expires_at: order.expires_at,
+          renewal_order_id: order.renewal_order_id || null,
+          assigned_profiles: assignedByOrder.get(String(order.order_id)) || 0,
+          required_profiles: netflixQuantity(order.items),
+        })),
+    });
+  } catch (err) {
+    req.log?.error({ err }, "Manual inventory assignment options failed");
+    return res.status(503).json({ error: "Impossible de charger les commandes éligibles." });
+  }
+});
+
+router.post("/admin/inventory/:id/assign", requireAdmin, async (req: AuthedRequest, res): Promise<any> => {
+  const inventoryId = String(req.params.id || "");
+  const orderId = typeof req.body?.order_id === "string" ? req.body.order_id.trim() : "";
+  if (!INVENTORY_ID_RE.test(inventoryId)) {
+    return res.status(400).json({ error: "Identifiant de stock invalide." });
+  }
+  if (!/^ORD-[A-Za-z0-9-]{6,40}$/.test(orderId)) {
+    return res.status(400).json({ error: "Identifiant de commande invalide." });
+  }
+
+  try {
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from("orders")
+      .select("order_id, assigned_email, status, payment_status, items, renewal_order_id")
+      .eq("order_id", orderId)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!order) return res.status(404).json({ error: "Commande introuvable." });
+    if (order.status !== "pending" || order.payment_status !== "paid") {
+      return res.status(409).json({ error: "La commande doit être payée et en attente d’activation." });
+    }
+    if (netflixQuantity(order.items) < 1) {
+      return res.status(409).json({ error: "Cette commande ne contient pas de profil Netflix à attribuer." });
+    }
+
+    let renewalBaseDate: string | Date = new Date();
+    if (order.renewal_order_id) {
+      const { data: sourceOrder, error: sourceError } = await supabaseAdmin
+        .from("orders")
+        .select("assigned_email, payment_status, status, expires_at")
+        .eq("order_id", order.renewal_order_id)
+        .maybeSingle();
+      const sameOwner = String(sourceOrder?.assigned_email || "").trim().toLowerCase()
+        === String(order.assigned_email || "").trim().toLowerCase();
+      if (
+        sourceError
+        || !sourceOrder
+        || !sameOwner
+        || sourceOrder.payment_status !== "paid"
+        || !["active", "completed"].includes(String(sourceOrder.status))
+      ) {
+        return res.status(409).json({ error: "La commande de renouvellement d’origine n’est plus valide." });
+      }
+      renewalBaseDate = sourceOrder.expires_at || renewalBaseDate;
+    }
+
+    const expiresAt = expiresAtFromItems(parseOrderItems(order.items), renewalBaseDate);
+    const { data: assignment, error: assignmentError } = await supabaseAdmin.rpc("assign_inventory_manually", {
+      p_inventory_id: inventoryId,
+      p_order_id: orderId,
+      p_expires_at: expiresAt,
+    });
+    if (assignmentError) {
+      const message = String(assignmentError.message || "");
+      if (message.includes("INVENTORY_NOT_AVAILABLE")) return res.status(409).json({ error: "Ce profil n’est plus disponible." });
+      if (message.includes("ORDER_NOT_ELIGIBLE")) return res.status(409).json({ error: "Cette commande n’est plus éligible à une attribution." });
+      throw assignmentError;
+    }
+    const result = assignment as any;
+    if (result?.result === "inventory_not_available") return res.status(409).json({ error: "Ce profil n’est plus disponible." });
+    if (result?.result === "order_not_eligible") return res.status(409).json({ error: "Cette commande n’est plus éligible à une attribution." });
+    if (result?.result !== "assigned") return res.status(409).json({ error: "L’attribution n’a pas pu être effectuée." });
+
+    void appendAuditLog({
+      action: "admin_inventory_manual_assignment",
+      actorUserId: req.adminUserId,
+      targetType: "inventory",
+      targetId: inventoryId,
+      details: { order_id: orderId, expires_at: expiresAt },
+    });
+    return res.json({ success: true, order_id: orderId, inventory_id: inventoryId, expires_at: expiresAt, assignment: result });
+  } catch (err) {
+    req.log?.error({ err }, "Manual inventory assignment failed");
+    return res.status(503).json({ error: "Impossible d’attribuer ce profil pour le moment." });
   }
 });
 
