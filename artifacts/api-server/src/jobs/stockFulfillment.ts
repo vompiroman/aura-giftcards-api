@@ -2,7 +2,7 @@ import { supabaseAdmin as supabase } from "../lib/supabase";
 import { fulfillVerifiedPayment, type PayableOrder } from "../lib/paymentFulfillment";
 
 const WAITING_ORDER_LIMIT = 100;
-const ORDER_COLUMNS = "order_id, assigned_email, amount, status, payment_status, promo_code_id, items, marketing_consent, meta_purchase_sent_at, created_at";
+const ORDER_COLUMNS = "order_id, assigned_email, amount, status, payment_status, promo_code_id, renewal_order_id, items, marketing_consent, meta_purchase_sent_at, created_at";
 
 interface StockFulfillmentLogger {
   warn?: (details: unknown, message?: string) => void;

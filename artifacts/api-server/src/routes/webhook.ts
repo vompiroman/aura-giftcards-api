@@ -80,7 +80,7 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
 
     const query = supabase
       .from("orders")
-      .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, slickpay_invoice_id, marketing_consent, meta_purchase_sent_at")
+      .select("order_id, assigned_email, status, payment_status, promo_code_id, renewal_order_id, items, amount, slickpay_invoice_id, marketing_consent, meta_purchase_sent_at")
       .eq("slickpay_invoice_id", invoiceId);
 
     const { data: order, error: fetchErr } = await query.single();

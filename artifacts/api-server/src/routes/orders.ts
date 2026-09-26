@@ -157,6 +157,16 @@ function inventoryCanBeReleased(order: { status?: unknown; expires_at?: unknown 
   return Number.isFinite(expiresAt) && expiresAt <= Date.now();
 }
 
+function netflixQuantity(items: unknown): number {
+  if (!Array.isArray(items)) return 0;
+  return items.reduce((total, item: any) => {
+    const name = String(item?.name || item?.service || "").trim().toLowerCase();
+    if (!name.includes("netflix")) return total;
+    const quantity = Number(item?.quantity);
+    return total + (Number.isInteger(quantity) && quantity > 0 ? quantity : 1);
+  }, 0);
+}
+
 const createOrderLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: process.env.NODE_ENV === "test" ? 100 : 10,
@@ -220,6 +230,53 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     if (!pricing.ok) {
       res.status(400).json({ error: pricing.error });
       return;
+    }
+
+    const rawRenewalOrderId = typeof req.body?.renewal_order_id === "string"
+      ? req.body.renewal_order_id.trim()
+      : "";
+    let renewalOrderId: string | null = null;
+    if (rawRenewalOrderId) {
+      if (!/^ORD-[A-Za-z0-9-]{6,40}$/.test(rawRenewalOrderId)) {
+        res.status(400).json({ error: "Référence de renouvellement invalide." });
+        return;
+      }
+      const { data: renewedOrder, error: renewedOrderError } = await supabaseAdmin
+        .from("orders")
+        .select("order_id, assigned_email, payment_status, status, items")
+        .eq("order_id", rawRenewalOrderId)
+        .maybeSingle();
+      const sameOwner = String(renewedOrder?.assigned_email || "").trim().toLowerCase() === email;
+      const requestedNetflixQuantity = netflixQuantity(pricing.cleanItems);
+      const renewedNetflixQuantity = netflixQuantity(renewedOrder?.items);
+      if (
+        renewedOrderError
+        || !renewedOrder
+        || !sameOwner
+        || renewedOrder.payment_status !== "paid"
+        || !["active", "completed"].includes(String(renewedOrder.status))
+        || requestedNetflixQuantity < 1
+        || requestedNetflixQuantity !== renewedNetflixQuantity
+      ) {
+        res.status(409).json({ error: "Cette commande Netflix ne peut pas être renouvelée." });
+        return;
+      }
+
+      const { count: assignedProfiles, error: assignedProfilesError } = await supabaseAdmin
+        .from("inventory")
+        .select("id", { count: "exact", head: true })
+        .eq("assigned_order_id", rawRenewalOrderId)
+        .eq("is_used", true)
+        .ilike("service", "%netflix%");
+      if (assignedProfilesError) {
+        res.status(503).json({ error: "Le renouvellement est momentanément indisponible." });
+        return;
+      }
+      if ((assignedProfiles || 0) !== requestedNetflixQuantity) {
+        res.status(409).json({ error: "Le profil Netflix de cette commande n'est plus attribué." });
+        return;
+      }
+      renewalOrderId = rawRenewalOrderId;
     }
 
     const manualServices = cartManualActivationServices(pricing.cleanItems);
@@ -312,6 +369,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       subtotal_amount: pricing.amount,
       discount_amount: discountAmount,
       promo_code_id: promo?.id || null,
+      renewal_order_id: renewalOrderId,
       status: "pending",
       payment_status: "unpaid",
       marketing_consent: marketingConsent,
