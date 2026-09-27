@@ -7,10 +7,12 @@ import ordersRouter from "./orders";
 import adminRouter from "./admin";
 import promosRouter from "./promos";
 import adminDashboardRouter from "./adminDashboard";
+import clientDiagnosticsRouter from "./clientDiagnostics";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
+router.use(clientDiagnosticsRouter);
 router.use(invoiceRouter);
 router.use(webhookRouter);
 router.use(authRouter);
