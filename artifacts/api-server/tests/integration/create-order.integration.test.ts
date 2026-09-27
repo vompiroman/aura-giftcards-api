@@ -279,6 +279,8 @@ describe("POST /api/create-order", () => {
 
     expect(res.status).toBe(201);
     const inserted = builder.insert.mock.calls[0][0];
+    expect(res.body.amount).toBe(800);
+    expect(inserted.amount).toBe(800);
     expect(JSON.stringify(inserted.items)).not.toContain("temporary-secret");
     expect(adminOrderItems(inserted.items)[0]).toMatchObject({
       client_credentials_submitted: true,
