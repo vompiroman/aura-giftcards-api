@@ -164,6 +164,7 @@ describe("POST /api/create-order", () => {
         assigned_email: "e2e-tester@exemple.com",
         payment_status: "paid",
         status: "active",
+        expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
         items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
       }))
       .mockReturnValueOnce(countQueryStub(1))
@@ -181,6 +182,46 @@ describe("POST /api/create-order", () => {
     expect(res.status).toBe(201);
     expect(insertBuilder.insert).toHaveBeenCalledWith(expect.objectContaining({
       renewal_order_id: "ORD-renew-source",
+      subtotal_amount: 600,
+      discount_amount: 60,
+      amount: 540,
+    }));
+    expect(res.body).toMatchObject({ amount: 540, subtotal: 600, discount: 60 });
+  });
+
+  it("applique la remise fidélité au renouvellement Spotify", async () => {
+    const insertBuilder = orderInsertStub();
+    fromMock
+      .mockReturnValueOnce(renewalOrderSelectStub({
+        order_id: "ORD-spotify-source",
+        assigned_email: "e2e-tester@exemple.com",
+        payment_status: "paid",
+        status: "active",
+        expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+        items: [{ name: "Spotify Family 1 mois", quantity: 1 }],
+      }))
+      .mockReturnValueOnce(orderInsertStub())
+      .mockReturnValueOnce(insertBuilder);
+
+    const res = await request(app)
+      .post("/api/create-order")
+      .set("Authorization", `Bearer ${VALID_TOKEN}`)
+      .send({
+        items: [{ name: "Spotify Family 1 mois", quantity: 1 }],
+        renewal_order_id: "ORD-spotify-source",
+        customer_whatsapp: "+213555000000",
+        activation_credentials: {
+          spotify: { email: "spotify@example.com", password: "temporary-secret" },
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ amount: 720, subtotal: 800, discount: 80 });
+    expect(insertBuilder.insert).toHaveBeenCalledWith(expect.objectContaining({
+      renewal_order_id: "ORD-spotify-source",
+      subtotal_amount: 800,
+      discount_amount: 80,
+      amount: 720,
     }));
   });
 
@@ -190,6 +231,7 @@ describe("POST /api/create-order", () => {
       assigned_email: "other@example.com",
       payment_status: "paid",
       status: "active",
+      expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
       items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
     }));
 

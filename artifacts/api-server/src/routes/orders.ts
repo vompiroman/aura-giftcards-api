@@ -44,6 +44,7 @@ import {
 } from "../lib/promos";
 import { normalizeAlgerianMobile } from "../lib/phone";
 import { expiresAtFromItems } from "../lib/payments";
+import { loyaltyRenewalDiscount, renewalOffer, sameRenewalItems } from "../lib/renewals";
 
 const router: IRouter = Router();
 const MARKETING_CONSENT_VERSION = "2026-07-26";
@@ -243,38 +244,42 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       }
       const { data: renewedOrder, error: renewedOrderError } = await supabaseAdmin
         .from("orders")
-        .select("order_id, assigned_email, payment_status, status, items")
+        .select("order_id, assigned_email, payment_status, status, items, expires_at")
         .eq("order_id", rawRenewalOrderId)
         .maybeSingle();
       const sameOwner = String(renewedOrder?.assigned_email || "").trim().toLowerCase() === email;
       const requestedNetflixQuantity = netflixQuantity(pricing.cleanItems);
       const renewedNetflixQuantity = netflixQuantity(renewedOrder?.items);
+      const offer = renewedOrder ? renewalOffer(renewedOrder) : null;
       if (
         renewedOrderError
         || !renewedOrder
         || !sameOwner
         || renewedOrder.payment_status !== "paid"
         || !["active", "completed"].includes(String(renewedOrder.status))
-        || requestedNetflixQuantity < 1
+        || !offer
+        || !sameRenewalItems(pricing.cleanItems, renewedOrder.items)
         || requestedNetflixQuantity !== renewedNetflixQuantity
       ) {
-        res.status(409).json({ error: "Cette commande Netflix ne peut pas être renouvelée." });
+        res.status(409).json({ error: "Cette commande ne peut pas être renouvelée." });
         return;
       }
 
-      const { count: assignedProfiles, error: assignedProfilesError } = await supabaseAdmin
-        .from("inventory")
-        .select("id", { count: "exact", head: true })
-        .eq("assigned_order_id", rawRenewalOrderId)
-        .eq("is_used", true)
-        .ilike("service", "%netflix%");
-      if (assignedProfilesError) {
-        res.status(503).json({ error: "Le renouvellement est momentanément indisponible." });
-        return;
-      }
-      if ((assignedProfiles || 0) !== requestedNetflixQuantity) {
-        res.status(409).json({ error: "Le profil Netflix de cette commande n'est plus attribué." });
-        return;
+      if (requestedNetflixQuantity > 0) {
+        const { count: assignedProfiles, error: assignedProfilesError } = await supabaseAdmin
+          .from("inventory")
+          .select("id", { count: "exact", head: true })
+          .eq("assigned_order_id", rawRenewalOrderId)
+          .eq("is_used", true)
+          .ilike("service", "%netflix%");
+        if (assignedProfilesError) {
+          res.status(503).json({ error: "Le renouvellement est momentanément indisponible." });
+          return;
+        }
+        if ((assignedProfiles || 0) !== requestedNetflixQuantity) {
+          res.status(409).json({ error: "Le profil Netflix de cette commande n'est plus attribué." });
+          return;
+        }
       }
       renewalOrderId = rawRenewalOrderId;
     }
@@ -334,6 +339,10 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       res.status(400).json({ error: "Code promo invalide." });
       return;
     }
+    if (renewalOrderId && promoCode) {
+      res.status(400).json({ error: "La remise fidélité ne peut pas être cumulée avec un code promo." });
+      return;
+    }
     let promo: any = null;
     let discountAmount = 0;
     if (promoCode) {
@@ -358,6 +367,9 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       }
       promo = candidate;
       discountAmount = calculatePromoDiscount(pricing.amount, candidate);
+    }
+    if (renewalOrderId) {
+      discountAmount = loyaltyRenewalDiscount(pricing.amount);
     }
     const finalAmount = Math.max(0, pricing.amount - discountAmount);
 
@@ -459,6 +471,7 @@ router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
       return {
         ...o,
         items: publicOrderItems(o.items),
+        renewal_offer: renewalOffer(o),
         waiting_for_stock:
           o.status === "pending" && o.payment_status === "paid" && netflixQuantity > assignedAccounts.length,
         accounts: publicAccounts,
