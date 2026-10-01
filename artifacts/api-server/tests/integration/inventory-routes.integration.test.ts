@@ -82,6 +82,46 @@ describe("admin Netflix inventory routes", () => {
     expect(fulfillWaitingMock).toHaveBeenCalledTimes(1);
   });
 
+  it("ajoute cinq profils avec un e-mail commun en une insertion et conserve l'attribution manuelle", async () => {
+    const profiles = Array.from({ length: 5 }, (_, index) => ({ profile_name: `Aura0${index + 1}`, profile_pin: `000${index + 1}` }));
+    const response = await request(app).post("/api/admin/inventory")
+      .set("Authorization", "Bearer admin-token")
+      .send({ account_email: "Account@Aura-Stream.com", profiles, manual_assignment: true });
+    expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({ added: 5, manual_assignment: true });
+    expect(insertMock).toHaveBeenCalledTimes(1);
+    expect(insertMock.mock.calls[0][0]).toHaveLength(5);
+    for (const [index, row] of insertMock.mock.calls[0][0].entries()) {
+      expect(row).toMatchObject({ account_email: "account@aura-stream.com", service: "netflix", ...profiles[index], is_used: false });
+    }
+    expect(fulfillWaitingMock).not.toHaveBeenCalled();
+  });
+
+  it("valide tous les profils avant insertion pour éviter un ajout partiel", async () => {
+    const response = await request(app).post("/api/admin/inventory")
+      .set("Authorization", "Bearer admin-token")
+      .send({ account_email: "account@aura-stream.com", profiles: [
+        { profile_name: "Aura01", profile_pin: "0001" },
+        { profile_name: "Aura02", profile_pin: "bad" },
+      ] });
+    expect(response.status).toBe(400);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(fulfillWaitingMock).not.toHaveBeenCalled();
+  });
+
+  it.each([[], Array(6).fill({ profile_name: "Aura01", profile_pin: "0001" }), "invalid", [null]])("refuse les lots de profils invalides %j", async profiles => {
+    await request(app).post("/api/admin/inventory").set("Authorization", "Bearer admin-token")
+      .send({ account_email: "account@aura-stream.com", profiles }).expect(400);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it("attribue automatiquement les profils d'un lot quand l'option manuelle est désactivée", async () => {
+    const response = await request(app).post("/api/admin/inventory").set("Authorization", "Bearer admin-token")
+      .send({ account_email: "account@aura-stream.com", profiles: [{ profile_name: "Aura01", profile_pin: "0001" }], manual_assignment: false }).expect(201);
+    expect(response.body.added).toBe(1);
+    expect(fulfillWaitingMock).toHaveBeenCalledTimes(1);
+  });
+
   it("refuse un profil incomplet avant tout accès à la base", async () => {
     const response = await request(app)
       .post("/api/admin/inventory")
