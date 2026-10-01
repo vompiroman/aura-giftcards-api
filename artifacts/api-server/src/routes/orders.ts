@@ -719,7 +719,7 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
       ? req.query.search.replace(/[^a-zA-Z0-9@._+\- ]/g, " ").trim().slice(0, 120)
       : "";
     const requestedService = typeof req.query.service === "string" ? req.query.service.trim() : "";
-    const service = ["Netflix", "Spotify", "Crunchyroll"].includes(requestedService) ? requestedService : "";
+    const service = ["Netflix", "Spotify", "Crunchyroll", "Snapchat"].includes(requestedService) ? requestedService : "";
     const parseQueryDate = (value: unknown): string => {
       if (typeof value !== "string" || !value.trim()) return "";
       const parsed = new Date(value);
