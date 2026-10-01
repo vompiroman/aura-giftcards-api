@@ -1,6 +1,8 @@
 // Source de vérité UNIQUE des prix (en DA). Le client ne peut jamais l'influencer.
 // Toute route qui touche à l'argent lit depuis ici, jamais depuis req.body.
 export const PRICES: Record<string, number> = {
+  "Snapchat+ 3 mois": 2000,
+  "Snapchat+ 6 mois": 2500,
   "Netflix Premium 1 mois": 600,
   "Netflix Premium 2 mois": 1100,
   "Spotify Family 1 mois": 800,

@@ -1,3 +1,4 @@
+import { snapchatActivationReady } from "./snapchat";
 import crypto from "crypto";
 
 export interface ClientCredentials {
@@ -108,7 +109,7 @@ export function markClientCredentialsNotified(
   return parseOrderItems(itemsValue).map((item) => {
     if (!item || typeof item !== "object") return item;
     const name = String(item?.name || item?.service || "").toLowerCase();
-    if (!name.includes(normalizedService) || !item.client_credentials_encrypted) return item;
+    if (!name.includes(normalizedService) || (!item.client_credentials_encrypted && !item.snapchat_username)) return item;
     return {
       ...item,
       client_credentials_notification_sent_at: notifiedAt,
@@ -204,9 +205,10 @@ export function manualActivationReady(itemsValue: unknown): boolean {
   return publicOrderItems(itemsValue)
     .filter((item) => {
       const name = String(item?.name || item?.service || "").toLowerCase();
-      return name.includes("spotify") || name.includes("crunchyroll");
+      return name.includes("spotify") || name.includes("crunchyroll") || name.includes("snapchat");
     })
-    .every((item) => item.client_credentials_submitted === true);
+    .every((item) => String(item?.name || item?.service || "").toLowerCase().includes("snapchat")
+      ? snapchatActivationReady(item) : item.client_credentials_submitted === true);
 }
 
 export function orderItemSummary(itemsValue: unknown): string {

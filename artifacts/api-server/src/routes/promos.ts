@@ -41,7 +41,7 @@ const PROMO_UPDATE_FIELDS = new Set([
   "services",
   "active",
 ]);
-const VALID_SERVICES = new Set(["netflix", "spotify", "crunchyroll"]);
+const VALID_SERVICES = new Set(["netflix", "spotify", "crunchyroll", "snapchat"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const promoValidationLimiter = rateLimit({

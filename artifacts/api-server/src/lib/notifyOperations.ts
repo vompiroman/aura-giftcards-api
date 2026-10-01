@@ -1,6 +1,7 @@
 interface OperationsAlertOptions {
   orderId?: string;
   service?: string;
+  snapchatUsername?: string;
   credentials?: {
     email: string;
     password: string;
@@ -45,6 +46,9 @@ export async function notifyOperations(
       : null,
     opts.credentials?.whatsapp
       ? { name: "WhatsApp", value: safeDiscordText(opts.credentials.whatsapp, 40), inline: true }
+      : null,
+    opts.snapchatUsername
+      ? { name: "Nom d’utilisateur Snapchat", value: safeDiscordText("@" + opts.snapchatUsername, 40), inline: true }
       : null,
   ].filter(Boolean);
 

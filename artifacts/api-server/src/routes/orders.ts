@@ -46,6 +46,8 @@ import { normalizeAlgerianMobile } from "../lib/phone";
 import { expiresAtFromItems } from "../lib/payments";
 import { loyaltyRenewalDiscount, renewalOffer, sameRenewalItems } from "../lib/renewals";
 
+import { normalizeSnapchatUsername } from "../lib/snapchat";
+
 const router: IRouter = Router();
 const MARKETING_CONSENT_VERSION = "2026-07-26";
 const INVENTORY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -284,12 +286,19 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       renewalOrderId = rawRenewalOrderId;
     }
 
-    const manualServices = cartManualActivationServices(pricing.cleanItems);
-    if (manualServices.length > 0 && !customerWhatsapp) {
-      res.status(400).json({ error: "Le numéro WhatsApp est requis pour une activation Spotify ou Crunchyroll." });
+    const hasSnapchat = pricing.cleanItems.some(item => item.name.toLowerCase().includes("snapchat"));
+    const snapchatUsername = hasSnapchat ? normalizeSnapchatUsername(req.body?.snapchat_username) : null;
+    if (hasSnapchat && (!snapchatUsername || req.body?.snapchat_friend_added !== true)) {
+      res.status(400).json({ error: "Renseigne ton nom d’utilisateur Snapchat et confirme l’ajout de @aura-stream." });
       return;
     }
-    let orderItems = pricing.cleanItems;
+    const manualServices = cartManualActivationServices(pricing.cleanItems);
+    if ((manualServices.length > 0 || hasSnapchat) && !customerWhatsapp) {
+      res.status(400).json({ error: "Le numéro WhatsApp est requis pour une activation manuelle." });
+      return;
+    }
+    let orderItems: any[] = pricing.cleanItems.map(item => hasSnapchat && item.name.toLowerCase().includes("snapchat")
+      ? { ...item, snapchat_username: snapchatUsername, snapchat_friend_added: true } : item);
     try {
       for (const service of manualServices) {
         orderItems = setClientCredentials(
@@ -843,7 +852,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
         }
       }
       if (!manualActivationReady(currentOrder.items)) {
-        return res.status(409).json({ error: "Les identifiants Spotify ou Crunchyroll doivent être reçus avant l’activation." });
+        return res.status(409).json({ error: "Les informations du compte doivent être reçues avant l’activation." });
       }
     }
     if (status === "completed" && currentOrder.payment_status !== "paid") {

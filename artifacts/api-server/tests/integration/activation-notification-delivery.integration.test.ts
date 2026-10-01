@@ -80,6 +80,16 @@ describe("rattrapage des notifications d'activation", () => {
     });
   });
 
+  it("transmet le pseudo Snapchat payé et marque la notification", async () => {
+    const items=[{ name: "Snapchat+ 6 mois", snapchat_username: "client.snap", snapchat_friend_added: true }];
+    const updates: any[]=[];
+    fromMock.mockReturnValueOnce(pendingOrdersQuery(items)).mockReturnValueOnce(updateQuery(updates));
+    notifyOperationsMock.mockResolvedValue(true);
+    expect((await deliverPendingActivationNotifications()).sent).toBe(1);
+    expect(notifyOperationsMock).toHaveBeenCalledWith(expect.stringContaining("Snapchat+ payée"),expect.objectContaining({snapchatUsername:"client.snap"}));
+    expect(updates[0].items[0].client_credentials_notification_sent_at).toEqual(expect.any(String));
+  });
+
   it("conserve la notification en attente lorsque Discord est indisponible", async () => {
     const items = setClientCredentials(
       [{ name: "Spotify Family 1 mois" }],

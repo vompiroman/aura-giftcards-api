@@ -78,6 +78,20 @@ describe("POST /api/create-order", () => {
     else process.env.CLIENT_CREDENTIALS_KEY = originalCredentialsKey;
   });
 
+  it.each([["Snapchat+ 3 mois", 2000], ["Snapchat+ 6 mois", 2500]])("enregistre %s au tarif serveur avec le pseudo", async (name, amount) => {
+    const builder = orderInsertStub(); fromMock.mockReturnValue(builder);
+    const res = await request(app).post("/api/create-order").set("Authorization", "Bearer " + VALID_TOKEN).send({
+      items: [{ name, quantity: 1, price: 1, snapchat_username: "injected" }], amount: 1,
+      customer_whatsapp: "+213555000000", snapchat_username: " @Client.snap ", snapchat_friend_added: true,
+    });
+    expect(res.status).toBe(201); expect(res.body.amount).toBe(amount);
+    expect(builder.insert).toHaveBeenCalledWith(expect.objectContaining({ items: [expect.objectContaining({ name, snapchat_username: "client.snap", snapchat_friend_added: true })] }));
+  });
+  it.each([{snapchat_username: "invalid name", snapchat_friend_added: true}, {snapchat_username: "client.snap", snapchat_friend_added: false}, {snapchat_friend_added: true}])("refuse Snapchat sans pseudo valide et ajout confirmé", async details => {
+    const res = await request(app).post("/api/create-order").set("Authorization", "Bearer " + VALID_TOKEN).send({items: [{name: "Snapchat+ 3 mois", quantity: 1}], customer_whatsapp: "+213555000000", ...details});
+    expect(res.status).toBe(400); expect(fromMock).not.toHaveBeenCalled();
+  });
+
   it("refuse une requête sans token", async () => {
     const res = await request(app)
       .post("/api/create-order")

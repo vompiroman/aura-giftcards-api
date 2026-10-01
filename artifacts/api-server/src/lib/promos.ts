@@ -37,7 +37,7 @@ export function promoIsActive(promo: PromoDefinition, now = new Date()): boolean
 export function promoSupportsItems(promo: PromoDefinition, items: Array<{ name: string }>): boolean {
   const services = (promo.services || []).map((s) => s.trim().toLowerCase()).filter(Boolean);
   if (!services.length) return true;
-  return items.every((item) => services.includes(item.name.trim().split(/\s+/)[0].toLowerCase()));
+  return items.every((item) => services.includes(item.name.trim().split(/\s+/)[0].toLowerCase().replace(/\+$/, "")));
 }
 
 export function calculatePromoDiscount(subtotal: number, promo: PromoDefinition): number {
