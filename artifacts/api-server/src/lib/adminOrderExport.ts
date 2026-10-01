@@ -30,6 +30,7 @@ function itemService(name: unknown): string {
   if (normalized.includes("netflix")) return "Netflix";
   if (normalized.includes("spotify")) return "Spotify";
   if (normalized.includes("crunchyroll")) return "Crunchyroll";
+  if (normalized.includes("snapchat")) return "Snapchat+";
   return "Autre";
 }
 

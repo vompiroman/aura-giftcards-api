@@ -14,10 +14,11 @@ export interface ActivationNotificationSummary {
   errors: number;
 }
 
-function activationService(item: any): "spotify" | "crunchyroll" | null {
+function activationService(item: any): "spotify" | "crunchyroll" | "snapchat" | null {
   const name = String(item?.name || item?.service || "").toLowerCase();
   if (name.includes("spotify")) return "spotify";
   if (name.includes("crunchyroll")) return "crunchyroll";
+  if (name.includes("snapchat")) return "snapchat";
   return null;
 }
 
@@ -33,11 +34,13 @@ export async function deliverActivationNotificationsForOrder(
   for (const item of readableItems) {
     const service = activationService(item);
     const credentials = item?.client_credentials;
-    if (!service || !credentials || item?.client_credentials_notification_sent_at) continue;
+    if (!service || (service === "snapchat" ? !item?.snapchat_username : !credentials) || item?.client_credentials_notification_sent_at) continue;
     summary.checked += 1;
     const sent = await notifyOperations(
-      `Nouveau compte ${service} payé à activer. Les identifiants temporaires sont également disponibles dans le panneau administrateur sécurisé.`,
-      { orderId, service, credentials },
+      service === "snapchat"
+        ? `Nouvelle commande Snapchat+ payée à activer : ${item.name}. Le client a confirmé l’ajout de @aura-stream.`
+        : `Nouveau compte ${service} payé à activer. Les identifiants temporaires sont également disponibles dans le panneau administrateur sécurisé.`,
+      { orderId, service, credentials, snapchatUsername: service === "snapchat" ? item.snapchat_username : undefined },
     );
     if (!sent) {
       summary.pending += 1;
