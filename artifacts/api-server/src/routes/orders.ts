@@ -1335,6 +1335,16 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
       if (req.body.length === 0) return res.status(400).json({ error: "Lot vide." });
       if (req.body.length > MAX_BATCH) return res.status(400).json({ error: `Maximum ${MAX_BATCH} comptes par lot.` });
       rows = req.body;
+    } else if (req.body?.profiles !== undefined) {
+      if (!Array.isArray(req.body.profiles) || req.body.profiles.length < 1 || req.body.profiles.length > 5) {
+        return res.status(400).json({ error: "Ajoute entre 1 et 5 profils Netflix pour ce compte." });
+      }
+      rows = req.body.profiles.map((profile: any) => {
+        if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+          throw Object.assign(new Error("Profil Netflix invalide."), { statusCode: 400 });
+        }
+        return { ...req.body, profile_name: profile.profile_name, profile_pin: profile.profile_pin };
+      });
     } else {
       rows = [req.body];
     }
