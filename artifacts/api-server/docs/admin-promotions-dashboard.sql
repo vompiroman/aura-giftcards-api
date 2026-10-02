@@ -121,7 +121,7 @@ returns jsonb language sql stable security invoker set search_path = public as $
   ),
   days as (select generate_series(((now() at time zone 'UTC')::date - ((select days from config) - 1)), (now() at time zone 'UTC')::date, interval '1 day')::date as day),
   daily_rows as (select d.day, coalesce(sum(o.amount), 0) as revenue, count(o.id) as sales from days d left join public.orders o on o.created_at::date = d.day and o.payment_status = 'paid' group by d.day order by d.day),
-  services(service) as (values ('netflix'::text), ('spotify'::text), ('crunchyroll'::text)),
+  services(service) as (values ('netflix'::text)),
   stock_rows as (select s.service, count(i.id)::bigint as total, count(i.id) filter (where i.is_used = false)::bigint as available, count(i.id) filter (where i.is_used = true)::bigint as assigned from services s left join public.inventory i on lower(i.service) = s.service group by s.service)
   select jsonb_build_object(
     'summary', (select value from summary),

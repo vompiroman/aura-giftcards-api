@@ -112,6 +112,12 @@ router.get("/admin/dashboard", adminReadLimiter, requireAdmin, async (req, res) 
     return res.status(503).json({ error: "Les statistiques administrateur sont momentanément indisponibles." });
   }
 
+  // Older versions of the reporting RPC include empty stock cards for services
+  // that are activated manually. Only Netflix profiles belong to inventory.
+  const stock = (Array.isArray(data.stock) ? data.stock : []).filter(
+    (item: { service?: unknown }) => String(item?.service || "").trim().toLowerCase() === "netflix",
+  );
+
   if (startDate && endDate && customDays) {
     const paidOrders = await loadPaidOrdersForRange(startDate, endDate);
     if (paidOrders.error || !paidOrders.rows) {
@@ -133,6 +139,7 @@ router.get("/admin/dashboard", adminReadLimiter, requireAdmin, async (req, res) 
       period_start: startDate,
       period_end: endDate,
       ...dashboard,
+      stock,
       summary: {
         ...summary,
         revenue_period: revenuePeriod,
@@ -146,6 +153,7 @@ router.get("/admin/dashboard", adminReadLimiter, requireAdmin, async (req, res) 
     generated_at: new Date().toISOString(),
     period_days: days,
     ...(data as Record<string, unknown>),
+    stock,
   });
 });
 

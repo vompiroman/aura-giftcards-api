@@ -97,6 +97,19 @@ describe("admin Netflix inventory routes", () => {
     expect(fulfillWaitingMock).not.toHaveBeenCalled();
   });
 
+  it("limite la lecture du stock aux profils Netflix", async () => {
+    const netflixProfile = { id: "profile-netflix", service: "netflix", account_email: "demo@example.com", is_used: false };
+    const orderMock = vi.fn(async () => ({ data: [netflixProfile], error: null }));
+    const serviceMock = vi.fn(() => ({ order: orderMock }));
+    fromMock.mockReturnValue({ select: vi.fn(() => ({ ilike: serviceMock })) });
+    const response = await request(app).get("/api/admin/inventory")
+      .set("Authorization", "Bearer admin-token");
+    expect(response.status).toBe(200);
+    expect(serviceMock).toHaveBeenCalledWith("service", "netflix");
+    expect(response.body.inventory).toHaveLength(1);
+    expect(response.body.inventory[0].service).toBe("netflix");
+  });
+
   it("valide tous les profils avant insertion pour éviter un ajout partiel", async () => {
     const response = await request(app).post("/api/admin/inventory")
       .set("Authorization", "Bearer admin-token")

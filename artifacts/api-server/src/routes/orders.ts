@@ -609,19 +609,15 @@ router.post("/cron/stock-alerts", async (req, res): Promise<any> => {
 
   const rawThreshold = Number.parseInt(process.env.LOW_STOCK_THRESHOLD || "2", 10);
   const threshold = Number.isFinite(rawThreshold) ? Math.max(0, Math.min(rawThreshold, 100)) : 2;
-  const services = (process.env.LOW_STOCK_SERVICES || "Netflix,Spotify,Crunchyroll")
-    .split(",")
-    .map((service) => service.trim())
-    .filter(Boolean);
-
   try {
     const { data, error } = await supabaseAdmin
       .from("inventory")
       .select("service, is_used")
+      .ilike("service", "netflix")
       .eq("is_used", false);
     if (error) throw error;
 
-    const summary = summarizeAvailableStock(data || [], services, threshold);
+    const summary = summarizeAvailableStock(data || [], threshold);
     const lowStock = summary.filter((entry) => entry.low);
     const notifications = await Promise.all(lowStock.map((entry) => notifyAdmin(
       `Stock faible : ${entry.available} compte(s) disponible(s), seuil ${entry.threshold}. Réapprovisionnement recommandé.`,
@@ -1269,6 +1265,7 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
     const { data, error } = await supabaseAdmin
       .from("inventory")
       .select("id, service, account_email, is_used, assigned_order_id, assigned_at, created_at, profile_name, profile_pin, imap_host, imap_port, imap_user, account_password, imap_password")
+      .ilike("service", "netflix")
       .order("created_at", { ascending: false });
     if (error) throw error;
 

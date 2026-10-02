@@ -63,7 +63,8 @@ export function subscriptionFollowUp(
     return { label: "Déconnecté / clôturé", action: "Aucune action", expiresAt: "" };
   }
   if (order.status === "pending") {
-    return { label: "Activation en attente", action: "Vérifier le stock ou finaliser l’activation", expiresAt: "" };
+    return { label: "Activation en attente", action: itemService(item.name) === "Netflix"
+      ? "Vérifier le stock ou finaliser l’activation" : "Finaliser l’activation", expiresAt: "" };
   }
 
   const expiresAt = itemExpiry(order, item);
