@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
-import { supabaseAdmin, supabaseAuth as supabase } from "../lib/supabase";
+import { createAuthClient, supabaseAdmin, supabaseAuth as supabase } from "../lib/supabase";
+import { createSessionRefresher } from "../lib/sessionRefresh";
 import { isAdmin } from "../middleware/requireAdmin";
 import axios from "axios";
 import { appendAuditLog } from "../lib/auditLog";
@@ -18,6 +19,7 @@ import { normalizeAlgerianMobile } from "../lib/phone";
 import { getPurchaseEmailConfig, sendPasswordRecoveryEmail } from "../lib/purchaseEmail";
 
 const router: IRouter = Router();
+const refreshSession = createSessionRefresher(() => createAuthClient());
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -231,6 +233,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 });
 
 router.post("/refresh-session", refreshLimiter, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
   try {
     const refreshToken = refreshTokenFromRequest(req)
       || (typeof req.body?.refresh_token === "string" ? req.body.refresh_token.trim() : "");
@@ -242,15 +245,19 @@ router.post("/refresh-session", refreshLimiter, async (req, res) => {
       return res.status(400).json({ error: "Session invalide." });
     }
 
-    const { data, error } = await supabase.auth.refreshSession({
-      refresh_token: refreshToken,
-    });
-    if (error || !data.session?.access_token || !data.session?.refresh_token || !data.user) {
+    const { data, error } = await refreshSession(refreshToken);
+    if (error) {
+      if (!error.status || error.status >= 500 || error.status === 429) {
+        return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
+      }
       req.log.warn({ code: error?.code }, "Supabase session refresh rejected");
       return res.status(401).json({ error: "Session expirée. Reconnectez-vous." });
     }
+    if (!data.session?.access_token || !data.session.refresh_token || !data.user) {
+      return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
+    }
 
-    setSessionCookies(res, data.session, rememberSessionFromRequest(req) || req.body?.remember === true);
+    setSessionCookies(res, data.session, rememberSessionFromRequest(req) || !req.cookies?.[REMEMBER_COOKIE_NAME] || req.body?.remember === true);
     return res.json({
       authenticated: true,
       expires_at: data.session.expires_at,
@@ -504,7 +511,7 @@ router.post("/session", refreshLimiter, async (req, res) => {
 
     const refreshToken = refreshTokenFromRequest(req);
     if (!refreshToken) return res.json({ authenticated: false, user: null });
-    const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
+    const { data, error } = await refreshSession(refreshToken);
     if (error) {
       if (!error.status || error.status >= 500 || error.status === 429) {
         return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });

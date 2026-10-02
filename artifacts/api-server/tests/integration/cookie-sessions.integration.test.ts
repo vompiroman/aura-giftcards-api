@@ -9,6 +9,7 @@ const { signInMock, getUserMock, refreshSessionMock, adminSignOutMock } = vi.hoi
 }));
 
 vi.mock("../../src/lib/supabase", () => ({
+  createAuthClient: () => ({ auth: { refreshSession: refreshSessionMock } }),
   supabase: { auth: { getUser: getUserMock } },
   supabaseAdmin: { auth: { getUser: getUserMock, admin: { signOut: adminSignOutMock } } },
   supabaseAuth: {
@@ -135,6 +136,64 @@ describe("sessions par cookies HttpOnly", () => {
     expect(response.status).toBe(204);
     expect(adminSignOutMock).toHaveBeenCalledWith("access-token-cookie", "local");
     expect(cookieHeader(response).filter((value) => /aura_(access|refresh)=;/i.test(value)).length).toBe(2);
+  });
+
+  it.each([503, 429, undefined])("ne transforme pas une erreur temporaire %s en déconnexion", async (status) => {
+    refreshSessionMock.mockResolvedValueOnce({ data: { session: null, user: null }, error: { status } });
+    const response = await request(app).post("/api/refresh-session")
+      .set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", "aura_refresh=persistent-refresh-cookie; aura_remember=1").send({});
+    expect(response.status).toBe(503);
+    expect(cookieHeader(response)).toEqual([]);
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("conserve une ancienne session après renouvellement sans cookie remember", async () => {
+    refreshSessionMock.mockResolvedValue({ data: { user, session: {
+      access_token: "renewed-access", refresh_token: "renewed-refresh", expires_at: 1_900_000_000,
+    } }, error: null });
+    const response = await request(app).post("/api/refresh-session")
+      .set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", "aura_refresh=legacy-refresh-cookie").send({});
+    expect(response.status).toBe(200);
+    expect(cookieHeader(response).find(value => value.startsWith("aura_refresh="))).toContain("Max-Age=315360000");
+  });
+
+  it("respecte le choix explicite de ne pas mémoriser une session", async () => {
+    refreshSessionMock.mockResolvedValue({ data: { user, session: {
+      access_token: "renewed-access", refresh_token: "renewed-refresh", expires_at: 1_900_000_000,
+    } }, error: null });
+    const response = await request(app).post("/api/refresh-session")
+      .set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", "aura_refresh=temporary-refresh-cookie; aura_remember=0").send({});
+    expect(response.status).toBe(200);
+    expect(cookieHeader(response).every(value => !value.includes("Max-Age="))).toBe(true);
+  });
+
+  it("restaure dans un nouveau navigateur depuis le cookie persistant, puis renouvelle encore", async () => {
+    const login = await request(app).post("/api/login")
+      .set("Origin", "https://www.aura-stream.com")
+      .send({ email: user.email, password: "mot-de-passe-fort-2026" });
+    const persisted = cookieHeader(login).filter(value => /^(aura_refresh|aura_remember)=/.test(value))
+      .map(value => value.split(";")[0]).join("; ");
+    refreshSessionMock.mockResolvedValueOnce({ data: { user, session: {
+      access_token: "new-access", refresh_token: "new-refresh-cookie", expires_at: 1_900_000_000,
+    } }, error: null });
+    const restored = await request(app).post("/api/session")
+      .set("Origin", "https://www.aura-stream.com").set("Cookie", persisted).send({});
+    expect(restored.body.user.id).toBe(user.id);
+    expect(restored.body.authenticated).toBe(true);
+    const savedAgain = cookieHeader(restored).filter(value => /^(aura_refresh|aura_remember)=/.test(value))
+      .map(value => value.split(";")[0]).join("; ");
+    refreshSessionMock.mockResolvedValueOnce({ data: { user, session: {
+      access_token: "third-access", refresh_token: "third-refresh-cookie", expires_at: 1_900_000_000,
+    } }, error: null });
+    const reopened = await request(app).post("/api/session")
+      .set("Origin", "https://www.aura-stream.com").set("Cookie", savedAgain).send({});
+    expect(reopened.body.authenticated).toBe(true);
+    expect(refreshSessionMock).toHaveBeenLastCalledWith({ refresh_token: "new-refresh-cookie" });
+    expect(cookieHeader(reopened).find(value => value.startsWith("aura_refresh="))).toContain("Max-Age=315360000");
+    expect(signInMock).toHaveBeenCalledTimes(1);
   });
 
   it("restaure une session valide en une seule requête sans renouvellement", async () => {
