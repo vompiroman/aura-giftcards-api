@@ -35,7 +35,9 @@ describe("admin dashboard contract", () => {
           activation_pending: 0,
         },
         revenue_by_day: [{ date: "2026-07-30", revenue: 600, sales: 1 }],
-        stock: [{ service: "netflix", total: 1, available: 0, assigned: 1 }],
+        stock: [{ service: "netflix", total: 1, available: 0, assigned: 1 },
+          { service: "spotify", total: 0, available: 0, assigned: 0 },
+          { service: "crunchyroll", total: 0, available: 0, assigned: 0 }],
       },
       error: null,
     });
@@ -49,6 +51,7 @@ describe("admin dashboard contract", () => {
       paid_orders_total: 6,
     });
     expect(response.body.stock[0]).toMatchObject({ service: "netflix", available: 0 });
+    expect(response.body.stock).toHaveLength(1);
   });
 
   it("caps the requested reporting period at one year", async () => {
@@ -68,7 +71,8 @@ describe("admin dashboard contract", () => {
       data: {
         summary: { revenue_total: 5000, average_order: 600 },
         revenue_by_day: [],
-        stock: [],
+        stock: [{ service: "spotify", available: 0 }, { service: "Netflix", available: 3 },
+          { service: "crunchyroll", available: 0 }],
       },
       error: null,
     });
@@ -96,6 +100,7 @@ describe("admin dashboard contract", () => {
     expect(rpcMock).toHaveBeenCalledWith("get_admin_dashboard_metrics", { p_days: 3 });
     expect(gteMock).toHaveBeenCalledWith("created_at", "2026-06-30T23:00:00.000Z");
     expect(ltMock).toHaveBeenCalledWith("created_at", "2026-07-03T23:00:00.000Z");
+    expect(response.body.stock).toEqual([{ service: "Netflix", available: 3 }]);
     expect(response.body).toMatchObject({
       period_days: 3,
       period_start: "2026-07-01",

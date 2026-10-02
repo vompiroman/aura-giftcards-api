@@ -4,6 +4,10 @@ import { buildAdminOrdersCsv, subscriptionFollowUp } from "../../src/lib/adminOr
 const now = new Date("2026-08-08T12:00:00.000Z");
 
 describe("export de suivi administrateur", () => {
+  it.each(["Spotify Family 1 mois", "Crunchyroll Mega Fan 1 mois"])("ne demande jamais de vérifier du stock pour %s", (name) => {
+    const result = subscriptionFollowUp({ payment_status: "paid", status: "pending" }, { name }, now);
+    expect(result.action).toBe("Finaliser l’activation");
+  });
   it("classe les abonnements expirés et ceux qui expirent bientôt", () => {
     expect(subscriptionFollowUp({ payment_status: "paid", status: "active", activated_at: "2026-07-01T12:00:00.000Z" }, { name: "Netflix Premium 1 mois" }, now).label)
       .toBe("À déconnecter");
