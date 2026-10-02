@@ -31,6 +31,7 @@ vi.mock("axios", () => ({
 }));
 
 vi.mock("../../src/lib/supabase", () => ({
+  createAuthClient: () => ({ auth: { refreshSession: refreshSessionMock } }),
   supabase: { auth: { getUser: getUserMock } },
   supabaseAdmin: { auth: { getUser: getUserMock, admin: { signOut: adminSignOutMock, generateLink: generateLinkMock } } },
   supabaseAuth: {

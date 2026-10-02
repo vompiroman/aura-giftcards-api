@@ -38,12 +38,13 @@ if (!supabaseUrl || !supabaseKey || !supabaseAuthKey) {
 }
 
 // Client AUTH : utilisé UNIQUEMENT pour les appels d'authentification (.auth.signUp, .auth.signIn, .auth.getUser)
-export const supabaseAuth = createClient(supabaseUrl, supabaseAuthKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-  },
-});
+export function createAuthClient() {
+  return createClient(supabaseUrl!, supabaseAuthKey!, {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+  });
+}
+
+export const supabaseAuth = createAuthClient();
 
 // Client ADMIN / DB : utilisé pour toutes les requêtes base de données (.from, .rpc)
 // En ne l'utilisant JAMAIS pour .auth.*, son header Authorization n'est JAMAIS pollué par le token d'un utilisateur !
