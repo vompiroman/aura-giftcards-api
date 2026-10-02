@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { supabaseAuth as supabase } from "../lib/supabase";
+import { isTemporaryAuthError } from "../lib/authAvailability";
 
 export function getAdminEmails(): Set<string> {
   const list = [
@@ -40,6 +41,10 @@ export async function requireAdmin(
     }
 
     const { data, error } = await supabase.auth.getUser(token);
+    if (isTemporaryAuthError(error)) {
+      res.status(503).json({ error: "Service d'authentification indisponible." });
+      return;
+    }
     const email = data?.user?.email?.toLowerCase();
     if (error || !email) {
       res.status(401).json({ error: "Token invalide ou expiré." });

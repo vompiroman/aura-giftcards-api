@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
 import { createAuthClient, supabaseAdmin, supabaseAuth as supabase } from "../lib/supabase";
 import { createSessionRefresher } from "../lib/sessionRefresh";
+import { isTemporaryAuthError, verifiedAccessExpiry } from "../lib/authAvailability";
 import { isAdmin } from "../middleware/requireAdmin";
 import axios from "axios";
 import { appendAuditLog } from "../lib/auditLog";
@@ -247,7 +248,7 @@ router.post("/refresh-session", refreshLimiter, async (req, res) => {
 
     const { data, error } = await refreshSession(refreshToken);
     if (error) {
-      if (!error.status || error.status >= 500 || error.status === 429) {
+      if (isTemporaryAuthError(error)) {
         return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
       }
       req.log.warn({ code: error?.code }, "Supabase session refresh rejected");
@@ -489,6 +490,7 @@ router.post("/session", refreshLimiter, async (req, res) => {
     if (token) {
       const { data, error } = await supabase.auth.getUser(token);
       if (!error && data?.user) {
+        const expiresAt = verifiedAccessExpiry(token);
         // Upgrade sessions created before persistent cookies were enabled when
         // the browser still has both HttpOnly tokens available.
         const legacySession = Boolean(
@@ -496,15 +498,20 @@ router.post("/session", refreshLimiter, async (req, res) => {
           && req.cookies?.[REFRESH_COOKIE_NAME]
           && !req.cookies?.[REMEMBER_COOKIE_NAME],
         );
-        if (legacySession) {
-          setSessionCookies(res, {
-            access_token: token,
-            refresh_token: req.cookies[REFRESH_COOKIE_NAME],
-          }, true);
+        // Renew shortly before expiry so a visible page can stay signed in.
+        // Older clients without an expiry claim can still restore normally.
+        if (!expiresAt || expiresAt > Math.floor(Date.now() / 1000) + 120 || !refreshTokenFromRequest(req)) {
+          if (legacySession) {
+            setSessionCookies(res, {
+              access_token: token,
+              refresh_token: req.cookies[REFRESH_COOKIE_NAME],
+              expires_at: expiresAt,
+            }, true);
+          }
+          return res.json({ authenticated: true, expires_at: expiresAt, user: publicUser(data.user) });
         }
-        return res.json({ authenticated: true, user: publicUser(data.user) });
       }
-      if (error && (!error.status || error.status >= 500 || error.status === 429)) {
+      if (isTemporaryAuthError(error)) {
         return res.status(503).json({ error: "Service d'authentification indisponible." });
       }
     }
@@ -513,11 +520,12 @@ router.post("/session", refreshLimiter, async (req, res) => {
     if (!refreshToken) return res.json({ authenticated: false, user: null });
     const { data, error } = await refreshSession(refreshToken);
     if (error) {
-      if (!error.status || error.status >= 500 || error.status === 429) {
+      if (isTemporaryAuthError(error)) {
         return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
       }
       // Do not clear cookies from a background response that might arrive
       // after a newer login has already installed a fresh session.
+      req.log.warn({ code: error.code, status: error.status }, "Supabase session restoration rejected");
       return res.json({ authenticated: false, user: null });
     }
     if (!data.session?.access_token || !data.session.refresh_token || !data.user) {
@@ -541,6 +549,10 @@ router.get("/me", async (req, res) => {
 
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     
+    if (isTemporaryAuthError(userError)) {
+      res.status(503).json({ error: "Service d'authentification indisponible." });
+      return;
+    }
     if (userError || !userData?.user) {
       res.status(401).json({ error: "Token invalide ou expiré." });
       return;
