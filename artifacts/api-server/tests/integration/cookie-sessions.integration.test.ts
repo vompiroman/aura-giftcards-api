@@ -87,6 +87,37 @@ describe("sessions par cookies HttpOnly", () => {
     expect(response.body.user.email).toBe(user.email);
   });
 
+  it("annonce l'expiration vérifiée et renouvelle avant une heure d'inactivité", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = (expiry: number) => `header.${Buffer.from(JSON.stringify({ exp: expiry })).toString("base64url")}.signature`;
+    const valid = await request(app).post("/api/session")
+      .set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", `aura_access=${token(now + 3600)}; aura_refresh=idle-refresh-token; aura_remember=1`).send({});
+    expect(valid.status).toBe(200);
+    expect(valid.body.expires_at).toBe(now + 3600);
+    expect(refreshSessionMock).not.toHaveBeenCalled();
+
+    refreshSessionMock.mockResolvedValue({ data: { user, session: {
+      access_token: token(now + 3660), refresh_token: "next-idle-refresh-token", expires_at: now + 3660,
+    } }, error: null });
+    const renewed = await request(app).post("/api/session")
+      .set("Origin", "https://www.aura-stream.com")
+      .set("Cookie", `aura_access=${token(now + 60)}; aura_refresh=idle-refresh-token; aura_remember=1`).send({});
+    expect(renewed.status).toBe(200);
+    expect(renewed.body.authenticated).toBe(true);
+    expect(renewed.body.expires_at).toBe(now + 3660);
+    expect(cookieHeader(renewed).some(value => value.startsWith("aura_refresh=next-idle-refresh-token"))).toBe(true);
+  });
+
+  it.each([503, 429, undefined])("ne transforme pas une panne Auth (%s) en déconnexion", async status => {
+    getUserMock.mockResolvedValue({ data: { user: null }, error: { status } });
+    for (const path of ["/api/me", "/api/admin/dashboard"]) {
+      const response = await request(app).get(path).set("Cookie", "aura_access=access-token-cookie");
+      expect(response.status).toBe(503);
+      expect(cookieHeader(response)).toEqual([]);
+    }
+  });
+
   it("rend la session persistante par défaut à la connexion", async () => {
     const response = await request(app)
       .post("/api/login")
