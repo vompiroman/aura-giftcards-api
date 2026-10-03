@@ -2,13 +2,14 @@ import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
 import { createAuthClient, supabaseAdmin, supabaseAuth as supabase } from "../lib/supabase";
 import { createSessionRefresher } from "../lib/sessionRefresh";
-import { isTemporaryAuthError, verifiedAccessExpiry } from "../lib/authAvailability";
+import { isTemporaryAuthError } from "../lib/authAvailability";
+import { webSessions } from "../lib/webSessionStore";
+import { WEB_SESSION_COOKIE } from "../lib/webSession";
+import type { SessionRequest } from "../middleware/webSession";
 import { isAdmin } from "../middleware/requireAdmin";
 import axios from "axios";
 import { appendAuditLog } from "../lib/auditLog";
 import {
-  ACCESS_COOKIE_NAME,
-  REFRESH_COOKIE_NAME,
   REMEMBER_COOKIE_NAME,
   accessTokenFromRequest,
   clearSessionCookies,
@@ -169,7 +170,7 @@ router.post("/register", registrationLimiter, async (req, res) => {
     }
 
     if (data.session) {
-      setSessionCookies(res, data.session, true);
+      await setSessionCookies(res, { ...data.session, user: data.user! }, true);
     }
     res.status(201).json({
       authenticated: Boolean(data.session),
@@ -211,7 +212,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     // Persistent sessions are the default for the customer experience. A
     // caller can still explicitly opt out on a shared or public device.
-    setSessionCookies(res, data.session, req.body?.remember !== false);
+    await setSessionCookies(res, { ...data.session, user: data.user }, req.body?.remember !== false);
 
     res.json({
       message: "Connexion réussie.",
@@ -230,43 +231,6 @@ router.post("/login", loginLimiter, async (req, res) => {
   } catch (err) {
     req.log.error({ errorName: err instanceof Error ? err.name : "unknown" }, "Unexpected error in POST /login");
     res.status(500).json({ error: "Erreur interne du serveur." });
-  }
-});
-
-router.post("/refresh-session", refreshLimiter, async (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-  try {
-    const refreshToken = refreshTokenFromRequest(req)
-      || (typeof req.body?.refresh_token === "string" ? req.body.refresh_token.trim() : "");
-    if (
-      refreshToken.length < 8
-      || refreshToken.length > 4096
-      || /[\r\n]/.test(refreshToken)
-    ) {
-      return res.status(400).json({ error: "Session invalide." });
-    }
-
-    const { data, error } = await refreshSession(refreshToken);
-    if (error) {
-      if (isTemporaryAuthError(error)) {
-        return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
-      }
-      req.log.warn({ code: error?.code }, "Supabase session refresh rejected");
-      return res.status(401).json({ error: "Session expirée. Reconnectez-vous." });
-    }
-    if (!data.session?.access_token || !data.session.refresh_token || !data.user) {
-      return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
-    }
-
-    setSessionCookies(res, data.session, rememberSessionFromRequest(req) || !req.cookies?.[REMEMBER_COOKIE_NAME] || req.body?.remember === true);
-    return res.json({
-      authenticated: true,
-      expires_at: data.session.expires_at,
-      user: publicUser(data.user),
-    });
-  } catch (err) {
-    req.log.error({ errorName: err instanceof Error ? err.name : "unknown" }, "Unexpected error in POST /refresh-session");
-    return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
   }
 });
 
@@ -446,6 +410,7 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
       req.log.warn({ code: revokeError.code }, "Supabase session revocation failed after password reset");
     }
 
+    await webSessions().revokeUser(recoveryUser.user.id);
     res.json({ message: "Mot de passe réinitialisé avec succès." });
   } catch (err: any) {
     req.log.warn({ message: err instanceof Error ? err.message : "unknown" }, "Reset-password request failed");
@@ -458,87 +423,69 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
 });
 
 router.post("/logout", async (req, res) => {
-  clearSessionCookies(res);
   try {
+    const cookie = req.cookies?.[WEB_SESSION_COOKIE];
+    if (cookie) await webSessions().revoke(cookie);
+    clearSessionCookies(res);
     const token = accessTokenFromRequest(req);
-    if (!token) {
-      res.status(204).send();
-      return;
+    if (token) {
+      const { error } = await supabaseAdmin.auth.admin.signOut(token, "local");
+      if (error) req.log.warn({ code: error.code }, "Legacy session revocation rejected");
     }
-
-    const { error } = await supabaseAdmin.auth.admin.signOut(token, "local");
-    if (error) {
-      req.log.warn({ code: error.code }, "Supabase local session revocation rejected");
-      res.status(401).json({ error: "Session invalide ou expirée." });
-      return;
-    }
-
     res.status(204).send();
-    return;
-  } catch (err) {
-    req.log.error({ message: err instanceof Error ? err.message : "unknown" }, "Unexpected error in POST /logout");
+  } catch {
     res.status(503).json({ error: "Déconnexion momentanément indisponible." });
   }
 });
 
-// Restore or refresh in one browser request. Anonymous visitors do not need
-// to make a failing /me request followed by a failing refresh request.
-router.post("/session", refreshLimiter, async (req, res) => {
+async function restoreWebSession(req: SessionRequest, res: import("express").Response) {
   res.setHeader("Cache-Control", "no-store");
   try {
-    const token = accessTokenFromRequest(req);
-    if (token) {
-      const { data, error } = await supabase.auth.getUser(token);
-      if (!error && data?.user) {
-        const expiresAt = verifiedAccessExpiry(token);
-        // Upgrade sessions created before persistent cookies were enabled when
-        // the browser still has both HttpOnly tokens available.
-        const legacySession = Boolean(
-          req.cookies?.[ACCESS_COOKIE_NAME]
-          && req.cookies?.[REFRESH_COOKIE_NAME]
-          && !req.cookies?.[REMEMBER_COOKIE_NAME],
-        );
-        // Renew shortly before expiry so a visible page can stay signed in.
-        // Older clients without an expiry claim can still restore normally.
-        if (!expiresAt || expiresAt > Math.floor(Date.now() / 1000) + 120 || !refreshTokenFromRequest(req)) {
-          if (legacySession) {
-            setSessionCookies(res, {
-              access_token: token,
-              refresh_token: req.cookies[REFRESH_COOKIE_NAME],
-              expires_at: expiresAt,
-            }, true);
-          }
-          return res.json({ authenticated: true, expires_at: expiresAt, user: publicUser(data.user) });
-        }
+    const cookie = req.cookies?.[WEB_SESSION_COOKIE];
+    let resolved = req.webSession;
+    if (cookie && !resolved) return res.json({ authenticated: false, user: null });
+    if (resolved) {
+      let result = await supabase.auth.getUser(resolved.tokens.access_token);
+      if (isTemporaryAuthError(result.error)) return res.status(503).json({ error: "Service de connexion momentanément indisponible." });
+      if (result.error || !result.data.user) {
+        resolved = await webSessions().resolve(cookie, true);
+        if (!resolved) return res.json({ authenticated: false, user: null });
+        result = await supabase.auth.getUser(resolved.tokens.access_token);
       }
-      if (isTemporaryAuthError(error)) {
-        return res.status(503).json({ error: "Service d'authentification indisponible." });
+      if (isTemporaryAuthError(result.error)) return res.status(503).json({ error: "Service de connexion momentanément indisponible." });
+      if (result.error || !result.data.user || result.data.user.id !== resolved.row.user_id) {
+        await webSessions().revoke(cookie);
+        return res.json({ authenticated: false, user: null });
       }
+      return res.json({ authenticated: true, expires_at: resolved.tokens.expires_at, user: publicUser(result.data.user) });
     }
 
-    const refreshToken = refreshTokenFromRequest(req);
-    if (!refreshToken) return res.json({ authenticated: false, user: null });
-    const { data, error } = await refreshSession(refreshToken);
+    // One-time upgrade of sessions issued by the old two-token cookie system.
+    const legacyToken = refreshTokenFromRequest(req)
+      || (req.path === "/refresh-session" && typeof req.body?.refresh_token === "string" ? req.body.refresh_token.trim() : "");
+    if (!legacyToken) return res.json({ authenticated: false, user: null });
+    if (legacyToken.length < 8 || legacyToken.length > 4096 || /[\r\n]/.test(legacyToken)) {
+      return res.status(400).json({ error: "Session invalide." });
+    }
+    const { data, error } = await refreshSession(legacyToken);
+    if (isTemporaryAuthError(error)) return res.status(503).json({ error: "Service de connexion momentanément indisponible." });
     if (error) {
-      if (isTemporaryAuthError(error)) {
-        return res.status(503).json({ error: "Le renouvellement de session est momentanément indisponible." });
-      }
-      // Do not clear cookies from a background response that might arrive
-      // after a newer login has already installed a fresh session.
-      req.log.warn({ code: error.code, status: error.status }, "Supabase session restoration rejected");
+      req.log.warn({ code: error.code, status: error.status }, "Legacy session upgrade rejected");
       return res.json({ authenticated: false, user: null });
     }
-    if (!data.session?.access_token || !data.session.refresh_token || !data.user) {
-      return res.status(503).json({ error: "Connexion momentanément indisponible." });
+    if (!data.session?.access_token || !data.session.refresh_token || !data.session.expires_at || !data.user) {
+      return res.status(503).json({ error: "Service de connexion momentanément indisponible." });
     }
-    setSessionCookies(res, data.session, rememberSessionFromRequest(req) || !req.cookies?.[REMEMBER_COOKIE_NAME]);
+    await setSessionCookies(res, { ...data.session, user: data.user },
+      rememberSessionFromRequest(req) || !req.cookies?.[REMEMBER_COOKIE_NAME]);
     return res.json({ authenticated: true, expires_at: data.session.expires_at, user: publicUser(data.user) });
-  } catch (error) {
-    req.log.warn({ errorName: error instanceof Error ? error.name : "unknown" }, "Session restoration unavailable");
-    return res.status(503).json({ error: "Service d'authentification indisponible." });
+  } catch {
+    return res.status(503).json({ error: "Service de connexion momentanément indisponible." });
   }
-});
+}
 
+router.post("/session", refreshLimiter, restoreWebSession);
+router.post("/refresh-session", refreshLimiter, restoreWebSession);
 router.get("/me", async (req, res) => {
   try {
     const token = accessTokenFromRequest(req);

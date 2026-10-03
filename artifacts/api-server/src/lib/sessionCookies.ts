@@ -1,14 +1,12 @@
 import type { Session } from "@supabase/supabase-js";
+import { WEB_SESSION_COOKIE, WEB_SESSION_LIFETIME_MS } from "./webSession";
+import { webSessions } from "./webSessionStore";
 import type { CookieOptions, NextFunction, Request, Response } from "express";
 
 export const ACCESS_COOKIE_NAME = "aura_access";
 export const REFRESH_COOKIE_NAME = "aura_refresh";
 export const REMEMBER_COOKIE_NAME = "aura_remember";
 
-const ONE_HOUR_MS = 60 * 60 * 1000;
-// Refresh tokens are long-lived in Supabase. Keep the browser cookie long-lived
-// too, then let Auth revoke the session on logout, password changes, or policy.
-const TEN_YEARS_MS = 10 * 365 * 24 * ONE_HOUR_MS;
 
 const baseCookieOptions: CookieOptions = {
   httpOnly: true,
@@ -44,7 +42,7 @@ export function rememberSessionFromRequest(req: Request): boolean {
 }
 
 export function requestUsesAuthCookies(req: Request): boolean {
-  return Boolean(req.cookies?.[ACCESS_COOKIE_NAME] || req.cookies?.[REFRESH_COOKIE_NAME]);
+  return Boolean(req.cookies?.[WEB_SESSION_COOKIE] || req.cookies?.[ACCESS_COOKIE_NAME] || req.cookies?.[REFRESH_COOKIE_NAME]);
 }
 
 export function attachCookieAuthorization(req: Request, _res: Response, next: NextFunction): void {
@@ -55,33 +53,26 @@ export function attachCookieAuthorization(req: Request, _res: Response, next: Ne
   next();
 }
 
-type SessionCookiePayload = Pick<Session, "access_token" | "refresh_token"> & {
-  expires_at?: Session["expires_at"];
-};
+export async function setSessionCookies(res: Response, session: Session, remember: boolean): Promise<void> {
+  if (!session.user?.id || !session.expires_at) throw new Error("Session without verified user or expiry");
+  const cookie = await webSessions().create({
+    access_token: session.access_token, refresh_token: session.refresh_token, expires_at: session.expires_at,
+  }, session.user.id, remember);
+  res.cookie(WEB_SESSION_COOKIE, cookie, {
+    ...baseCookieOptions, ...(remember ? { maxAge: WEB_SESSION_LIFETIME_MS } : {}),
+  });
+  clearLegacySessionCookies(res);
+}
 
-export function setSessionCookies(res: Response, session: SessionCookiePayload, remember: boolean): void {
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  const expiresInMs = session.expires_at
-    ? Math.max(1_000, Math.min(ONE_HOUR_MS, (session.expires_at - nowSeconds) * 1_000))
-    : ONE_HOUR_MS;
-  const persistent = remember ? { maxAge: TEN_YEARS_MS } : {};
-
-  res.cookie(ACCESS_COOKIE_NAME, session.access_token, {
-    ...baseCookieOptions,
-    ...(remember ? { maxAge: expiresInMs } : {}),
-  });
-  res.cookie(REFRESH_COOKIE_NAME, session.refresh_token, {
-    ...baseCookieOptions,
-    ...persistent,
-  });
-  res.cookie(REMEMBER_COOKIE_NAME, remember ? "1" : "0", {
-    ...baseCookieOptions,
-    ...persistent,
-  });
+export function clearLegacySessionCookies(res: Response): void {
+  for (const name of [ACCESS_COOKIE_NAME, REFRESH_COOKIE_NAME, REMEMBER_COOKIE_NAME]) {
+    res.clearCookie(name, baseCookieOptions);
+    // Also retire cookie paths used before the same-origin API proxy.
+    res.clearCookie(name, { ...baseCookieOptions, path: "/" });
+  }
 }
 
 export function clearSessionCookies(res: Response): void {
-  res.clearCookie(ACCESS_COOKIE_NAME, baseCookieOptions);
-  res.clearCookie(REFRESH_COOKIE_NAME, baseCookieOptions);
-  res.clearCookie(REMEMBER_COOKIE_NAME, baseCookieOptions);
+  res.clearCookie(WEB_SESSION_COOKIE, baseCookieOptions);
+  clearLegacySessionCookies(res);
 }

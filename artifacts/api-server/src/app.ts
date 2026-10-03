@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { attachCookieAuthorization, requestUsesAuthCookies } from "./lib/sessionCookies";
+import { attachWebSession } from "./middleware/webSession";
 
 const app: Express = express();
 // Trust only the configured number of reverse-proxy hops. A hard-coded trust
@@ -153,8 +154,10 @@ app.use("/api", globalApiLimiter, (req, res, next) => {
   res.append("Vary", "Origin");
   res.append("Vary", "Cookie");
 
-  attachCookieAuthorization(req, res, next);
+  next();
 });
+app.use("/api", attachWebSession);
+app.use("/api", attachCookieAuthorization);
 app.use(express.json({ limit: "64kb", strict: true }));
 app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 

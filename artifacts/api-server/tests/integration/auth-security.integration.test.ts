@@ -46,6 +46,15 @@ vi.mock("../../src/lib/supabase", () => ({
 
 import app from "../../src/app";
 
+vi.mock("../../src/lib/webSessionStore", async () => {
+  const { createSessionCipher, createWebSessions } = await import("../../src/lib/webSession");
+  const { memoryWebSessionStore } = await import("./helpers/web-session-store");
+  const { store } = memoryWebSessionStore();
+  const engine = createWebSessions({ store, cipher: createSessionCipher("security-tests-session-cipher-key-32-characters"),
+    refresh: async token => refreshSessionMock({ refresh_token: token }) });
+  return { webSessions: () => engine };
+});
+
 function accessTokenWithAmr(method: string, timestamp = Math.floor(Date.now() / 1000)): string {
   const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
   return `${encode({ alg: "none" })}.${encode({ amr: [{ method, timestamp }] })}.signature`;
@@ -273,8 +282,7 @@ describe("sécurité de l'authentification", () => {
     expect(response.body.access_token).toBeUndefined();
     expect(response.body.refresh_token).toBeUndefined();
     expect(response.headers["set-cookie"]).toEqual(expect.arrayContaining([
-      expect.stringMatching(/^aura_access=/),
-      expect.stringMatching(/^aura_refresh=/),
+      expect.stringMatching(/^aura_session_v2=[A-Za-z0-9_-]{43};/),
     ]));
   });
 
