@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { discordWebhookUrl } from "./discordWebhook";
 
 const recentAlerts = new Map<string, number>();
 const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
@@ -42,9 +43,9 @@ export async function notifyAdmin(
   const level: AlertLevel = opts.level ?? "critical";
 
   try {
-    const webhookUrl = process.env.DISCORD_ADMIN_WEBHOOK_URL;
+    const webhookUrl = discordWebhookUrl(process.env.DISCORD_ADMIN_WEBHOOK_URL);
     if (!webhookUrl) {
-      console.error("[notifyAdmin] DISCORD_ADMIN_WEBHOOK_URL non défini.");
+      console.error("[notifyAdmin] DISCORD_ADMIN_WEBHOOK_URL absent ou invalide.");
       return false;
     }
 
@@ -84,6 +85,7 @@ export async function notifyAdmin(
     try {
       const res = await fetch(webhookUrl, {
         method: "POST",
+        redirect: "error",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -97,8 +99,9 @@ export async function notifyAdmin(
     } finally {
       clearTimeout(timer);
     }
-  } catch (err) {
-    console.error("[notifyAdmin] Échec d'envoi de l'alerte:", (err as Error)?.message);
+  } catch {
+    // Transport errors can include the complete credential-bearing URL.
+    console.error("[notifyAdmin] Échec d'envoi de l'alerte Discord.");
     return false;
   }
 }

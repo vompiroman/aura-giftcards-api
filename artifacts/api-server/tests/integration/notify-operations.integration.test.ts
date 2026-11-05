@@ -14,8 +14,8 @@ describe("webhook Discord opérationnel", () => {
   });
 
   it("transmet les identifiants temporaires au canal opérationnel privé", async () => {
-    process.env.DISCORD_WEBHOOK_URL = "https://discord.example/operations";
-    process.env.DISCORD_ADMIN_WEBHOOK_URL = "https://discord.example/admin";
+    process.env.DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/123456789012345678/operations-test-token";
+    process.env.DISCORD_ADMIN_WEBHOOK_URL = "https://discord.com/api/webhooks/123456789012345679/admin-test-token";
     const fetchMock = vi.fn(async () => ({ ok: true, status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -33,8 +33,8 @@ describe("webhook Discord opérationnel", () => {
     )).resolves.toBe(true);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://discord.example/operations?wait=true",
-      expect.objectContaining({ method: "POST" }),
+      "https://discord.com/api/webhooks/123456789012345678/operations-test-token?wait=true",
+      expect.objectContaining({ method: "POST", redirect: "error" }),
     );
     const payload = JSON.stringify(fetchMock.mock.calls[0][1]);
     expect(payload).toContain("secret@example.com");
@@ -43,7 +43,7 @@ describe("webhook Discord opérationnel", () => {
   });
 
   it("retente les erreurs Discord transitoires", async () => {
-    process.env.DISCORD_WEBHOOK_URL = "https://discord.example/operations";
+    process.env.DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/123456789012345678/operations-test-token";
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
       .mockResolvedValueOnce({ ok: true, status: 200 });
@@ -51,6 +51,16 @@ describe("webhook Discord opérationnel", () => {
 
     await expect(notifyOperations("test")).resolves.toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("ne transmet aucun identifiant à un domaine externe", async () => {
+    process.env.DISCORD_WEBHOOK_URL = "https://discord.com.attacker.example/api/webhooks/123456789012345678/operations-test-token";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(notifyOperations("test", { credentials: {
+      email: "private@example.com", password: "private-password", whatsapp: "+213555000000",
+    } })).resolves.toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("ne bascule pas sur le webhook admin si le canal opérationnel manque", async () => {
