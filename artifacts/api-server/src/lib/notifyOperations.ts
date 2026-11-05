@@ -1,3 +1,5 @@
+import { discordWebhookUrl } from "./discordWebhook";
+
 interface OperationsAlertOptions {
   orderId?: string;
   service?: string;
@@ -18,18 +20,8 @@ export async function notifyOperations(
   message: string,
   opts: OperationsAlertOptions = {},
 ): Promise<boolean> {
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-  if (!webhookUrl) return false;
-
-  let confirmedWebhookUrl: string;
-  try {
-    const parsed = new URL(webhookUrl);
-    if (parsed.protocol !== "https:") return false;
-    parsed.searchParams.set("wait", "true");
-    confirmedWebhookUrl = parsed.toString();
-  } catch {
-    return false;
-  }
+  const confirmedWebhookUrl = discordWebhookUrl(process.env.DISCORD_WEBHOOK_URL, true);
+  if (!confirmedWebhookUrl) return false;
 
   const fields = [
     opts.orderId
@@ -66,6 +58,7 @@ export async function notifyOperations(
     try {
       const response = await fetch(confirmedWebhookUrl, {
         method: "POST",
+        redirect: "error",
         headers: { "Content-Type": "application/json" },
         body,
         signal: controller.signal,
