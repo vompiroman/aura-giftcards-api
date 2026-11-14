@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { generateLinkMock, sendRecoveryEmailMock, signUpMock, signInMock, getUserMock, refreshSessionMock, adminSignOutMock, axiosPutMock } = vi.hoisted(() => ({
+const { generateLinkMock, sendRecoveryEmailMock, signUpMock, signInMock, getUserMock, refreshSessionMock, adminSignOutMock, axiosPutMock, partnerFrom, partnerRpc } = vi.hoisted(() => ({
   generateLinkMock: vi.fn(),
   sendRecoveryEmailMock: vi.fn(),
   signUpMock: vi.fn(),
@@ -10,6 +10,8 @@ const { generateLinkMock, sendRecoveryEmailMock, signUpMock, signInMock, getUser
   refreshSessionMock: vi.fn(),
   adminSignOutMock: vi.fn(),
   axiosPutMock: vi.fn(),
+  partnerFrom: vi.fn(),
+  partnerRpc: vi.fn(),
 }));
 
 vi.mock("../../src/lib/purchaseEmail", () => ({
@@ -33,7 +35,7 @@ vi.mock("axios", () => ({
 vi.mock("../../src/lib/supabase", () => ({
   createAuthClient: () => ({ auth: { refreshSession: refreshSessionMock } }),
   supabase: { auth: { getUser: getUserMock } },
-  supabaseAdmin: { auth: { getUser: getUserMock, admin: { signOut: adminSignOutMock, generateLink: generateLinkMock } } },
+  supabaseAdmin: { from:partnerFrom,rpc:partnerRpc,auth: { getUser: getUserMock, admin: { signOut: adminSignOutMock, generateLink: generateLinkMock } } },
   supabaseAuth: {
     auth: {
       signUp: signUpMock,
@@ -45,6 +47,7 @@ vi.mock("../../src/lib/supabase", () => ({
 }));
 
 import app from "../../src/app";
+afterEach(()=>vi.unstubAllEnvs());
 
 vi.mock("../../src/lib/webSessionStore", async () => {
   const { createSessionCipher, createWebSessions } = await import("../../src/lib/webSession");
@@ -246,6 +249,23 @@ describe("sécurité de l'authentification", () => {
       },
     }));
     expect(response.body.user.user_metadata.phone).toBe("+213557828812");
+  });
+
+  it("conserve le questionnaire d'un nouveau compte à confirmer sans l'approuver", async () => {
+    vi.stubEnv("PARTNER_PROGRAM_ENABLED","true");
+    const answers={monthly_volume:"UNDER_5000",sales_channel:"WEB",profile:"INDEPENDENT",products:"Netflix",quick_contact:"@client"};
+    const insert=vi.fn(async()=>({error:null}));
+    partnerFrom.mockReturnValue({insert});
+    signUpMock.mockResolvedValue({data:{session:null,user:{id:"new-customer",email:"new@example.invalid",identities:[{}]}},error:null});
+    const res=await request(app).post("/api/register").send({email:"new@example.invalid",password:"local-fixture-password",partner_application:answers});
+    expect(res.status).toBe(201);
+    expect(res.body.authenticated).toBe(false);
+    expect(insert).toHaveBeenCalledWith({user_id:"new-customer",answers});
+    expect(partnerRpc).not.toHaveBeenCalled();
+    signUpMock.mockResolvedValue({data:{session:null,user:{id:"masked-id",email:"existing@example.invalid",identities:[]}},error:null});
+    const duplicate=await request(app).post("/api/register").send({email:"existing@example.invalid",password:"local-fixture-password",partner_application:answers});
+    expect(duplicate.status).toBe(201);
+    expect(insert).toHaveBeenCalledTimes(1);
   });
 
   it("renouvelle une session et effectue la rotation du refresh token", async () => {

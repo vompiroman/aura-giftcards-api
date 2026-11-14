@@ -5,7 +5,7 @@ import { supabaseAuth, supabaseAdmin as supabase } from "../lib/supabase";
 import { PRICES } from "../config/prices";
 import { notifyAdmin } from "../lib/notifyAdmin";
 import { recordPaymentFailure } from "../lib/paymentAlerts";
-import { fetchSlickPayInvoice } from "../lib/slickpay";
+import { fetchSlickPayInvoice, slickPayInvoiceUrl } from "../lib/slickpay";
 import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 import { runPaymentReconciliation } from "../jobs/paymentReconciliation";
 import { runPurchaseEmailDelivery } from "../jobs/purchaseEmailDelivery";
@@ -13,7 +13,6 @@ import { observeSlickPayPayment } from "../lib/slickpayObservation";
 
 const router = Router();
 
-const SLICKPAY_URL = "https://prodapi.slick-pay.com/api/v2/users/invoices";
 const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
 
 function validCronSecret(received: string | undefined): boolean {
@@ -364,7 +363,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
     let providerBody = "";
     let spData: any = null;
     try {
-      spRes = await fetch(SLICKPAY_URL, {
+      spRes = await fetch(slickPayInvoiceUrl(), {
         method: "POST",
         headers: {
           Accept: "application/json",

@@ -32,7 +32,7 @@ export interface FulfillmentResult {
 
 export async function fulfillVerifiedPayment(
   order: PayableOrder,
-  source: "slickpay_return" | "slickpay_webhook" | "slickpay_reconcile",
+  source: "slickpay_return" | "slickpay_webhook" | "slickpay_reconcile" | "partner_wallet",
   options: { paymentTransitioned: boolean },
 ): Promise<FulfillmentResult> {
   if (["active", "completed"].includes(order.status) && order.payment_status === "paid") {
@@ -43,11 +43,11 @@ export async function fulfillVerifiedPayment(
     throw new Error("SLICKPAY_OBSERVATION_REQUIRED");
   }
 
-  // Seule une observation atomique de l'API SlickPay peut faire passer une
-  // commande à paid. Il n'existe plus de chemin de confirmation manuelle.
+  // Le paiement a déjà été confirmé par l'observation SlickPay ou le débit
+  // atomique du portefeuille. Il n'existe pas de confirmation manuelle.
   const wasAlreadyPaid = options.paymentTransitioned !== true;
 
-  if (order.promo_code_id) {
+  if (order.promo_code_id && source !== "partner_wallet") {
     const { data: reserved, error: reserveError } = await supabaseAdmin.rpc("reserve_promo_redemption", {
       p_promo_code_id: order.promo_code_id,
       p_order_id: order.order_id,

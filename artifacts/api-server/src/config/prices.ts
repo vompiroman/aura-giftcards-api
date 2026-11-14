@@ -45,7 +45,7 @@ export function computeCart(rawItems: unknown): PricingResult {
 
     if (
       !name ||
-      unit === undefined ||
+      typeof unit !== "number" ||
       !Number.isInteger(quantity) ||
       quantity <= 0 ||
       quantity > 20
