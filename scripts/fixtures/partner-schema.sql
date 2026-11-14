@@ -16,4 +16,3 @@ grant select,insert,update on public.orders to service_role;
 grant insert,update on public.orders to authenticated;
 grant select on public.inventory to service_role;
 create function public.reserve_promo_redemption(uuid,text,text) returns boolean language sql as $$select false$$;
-

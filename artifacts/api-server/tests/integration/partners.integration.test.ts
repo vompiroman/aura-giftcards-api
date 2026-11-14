@@ -65,4 +65,3 @@ describe("partner boundaries",()=>{
     expect(mocks.rpc).toHaveBeenCalledWith("observe_wallet_deposit",{p_id:tx,p_invoice:"invoice-1",p_provider_state:"unpaid",p_amount:3000});
   });
 });
-

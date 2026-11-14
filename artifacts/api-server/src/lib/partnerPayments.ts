@@ -50,4 +50,3 @@ export async function reconcilePartnerDeposits() {
   }
   return { checked:data?.length || 0, confirmed, errors };
 }
-

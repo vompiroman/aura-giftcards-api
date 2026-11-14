@@ -6,4 +6,3 @@ export const AUTO_APPROVE_PARTNERS = () => process.env.AUTO_APPROVE_PARTNERS ===
 export const MIN_UNLOCK_DEPOSIT = 3000; // Kept in sync with public.partner_min_unlock_deposit().
 export const MAX_WALLET_DEPOSIT = 100_000;
 export const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-

@@ -142,4 +142,3 @@ router.post("/admin/partner-applications/:id/review",gate,writeLimiter,requireAd
 });
 
 export default router;
-

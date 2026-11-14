@@ -98,4 +98,3 @@ try {
   assert.equal(Number((await state(other)).wallet_balance),0);
   console.log("PostgreSQL: candidature, verrouillage, dépôt, doublons, montants, plafonds, débit, paliers, SlickPay, remboursement et privilèges validés.");
 } finally {await db.close();}
-

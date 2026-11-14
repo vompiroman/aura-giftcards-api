@@ -20,4 +20,3 @@ Ne pas exposer de clé de rôle serveur ou SlickPay côté site. Vérifier les r
 
 ## Vérification
 `pnpm --filter @workspace/api-server test:integration`, vérification TypeScript et build API, `npm run check` côté site. CI installe une version fixe de PGlite dans un répertoire temporaire et exécute `scripts/test-partner-database.mjs` sur une base PostgreSQL jetable. Le test applique la migration réelle, ainsi que la fonction d’observation SlickPay existante, à une structure de test sans données client. Il vérifie les droits, le traitement des candidatures, les montants de recharge, les doublons, le débit, les paliers et le remboursement. Le test navigateur utilise des réponses fictives, sans facturation réelle.
-
