@@ -1,5 +1,7 @@
 import { supabaseAdmin as supabase } from "../lib/supabase";
 import { notifyAdmin } from "../lib/notifyAdmin";
+import { PARTNER_SCHEMA_READY } from "../config/partnerTiers";
+import { reconcilePartnerDeposits } from "../lib/partnerPayments";
 import { fetchSlickPayInvoice } from "../lib/slickpay";
 import { fulfillVerifiedPayment, type PayableOrder } from "../lib/paymentFulfillment";
 import { observeSlickPayPayment } from "../lib/slickpayObservation";
@@ -20,6 +22,7 @@ export interface PaymentReconciliationSummary {
 }
 
 interface ReconciliationLogger {
+  info?: (details: unknown, message?: string) => void;
   warn?: (details: unknown, message?: string) => void;
   error?: (details: unknown, message?: string) => void;
 }
@@ -207,6 +210,16 @@ export async function runPaymentReconciliation(
           summary.error_codes[code] = (summary.error_codes[code] || 0) + 1;
           log.warn?.({ orderId: order.order_id, code }, "Payment reconciliation item failed");
         }
+      }
+    }
+    if (PARTNER_SCHEMA_READY()) {
+      try {
+        const deposits = await reconcilePartnerDeposits();
+        summary.errors += deposits.errors;
+        if (deposits.confirmed || deposits.errors) log.info?.({deposits}, "Wallet deposit reconciliation");
+      } catch {
+        summary.errors++;
+        log.warn?.({}, "Wallet deposit reconciliation failed");
       }
     }
     return summary;

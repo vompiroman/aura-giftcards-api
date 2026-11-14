@@ -7,6 +7,8 @@ import { recordPaymentFailure } from "../lib/paymentAlerts";
 import { fetchSlickPayInvoice } from "../lib/slickpay";
 import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 import { observeSlickPayPayment } from "../lib/slickpayObservation";
+import { observeDeposit } from "../lib/partnerPayments";
+import { PARTNER_SCHEMA_READY } from "../config/partnerTiers";
 
 const router = Router();
 
@@ -77,6 +79,26 @@ router.post("/webhook", webhookLimiter, async (req, res) => {
     const orderIdParam = webhookScalar(req.body?.order_id ?? req.body?.data?.order_id ?? metadata.order_id);
     
     if (!invoiceId || invoiceId.length > 160) return res.status(400).json({ error: "invoice_id manquant" });
+
+    if (PARTNER_SCHEMA_READY()) {
+      const {data:deposit,error:depositError}=await supabase.from("wallet_transactions")
+        .select("id,status,provider_invoice_id").eq("provider_invoice_id",invoiceId).eq("kind","DEPOSIT").maybeSingle();
+      if (depositError) {
+        req.log?.error({code:depositError.code},"Wallet callback lookup failed");
+        return res.status(503).json({error:"Vérification du dépôt indisponible."});
+      }
+      if (deposit) {
+        if (signatureVerified && metadata.wallet_deposit_id && metadata.wallet_deposit_id !== deposit.id) {
+          return res.status(400).json({error:"Références incohérentes"});
+        }
+        try { await observeDeposit(deposit); }
+        catch {
+          req.log?.warn({depositId:deposit.id},"Wallet callback verification deferred");
+          return res.status(503).json({error:"Vérification du dépôt indisponible."});
+        }
+        return res.status(200).json({received:true});
+      }
+    }
 
     const query = supabase
       .from("orders")

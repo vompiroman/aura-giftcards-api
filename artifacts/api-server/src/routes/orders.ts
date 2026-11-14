@@ -47,6 +47,8 @@ import { expiresAtFromItems } from "../lib/payments";
 import { loyaltyRenewalDiscount, renewalOffer, sameRenewalItems } from "../lib/renewals";
 
 import { normalizeSnapchatUsername } from "../lib/snapchat";
+import { PARTNER_ENABLED, PARTNER_SCHEMA_READY, uuidPattern } from "../config/partnerTiers";
+import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 
 const router: IRouter = Router();
 const MARKETING_CONSENT_VERSION = "2026-07-26";
@@ -203,24 +205,40 @@ const credentialReadLimiter = rateLimit({
   message: { error: "Trop de consultations d'identifiants. Réessayez plus tard." },
 });
 
-async function getAuthedEmail(req: Request): Promise<string | null> {
+async function getAuthedOrderUser(req: Request) {
   const h = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
   const token = /^Bearer\s+(.+)$/i.exec(h)?.[1]?.trim() || "";
   if (!token) return null;
 
   const { data, error } = await supabase.auth.getUser(token);
   if (error || !data?.user?.email) return null;
-  return data.user.email.trim().toLowerCase();
+  return { id: data.user.id, email: data.user.email.trim().toLowerCase() };
+}
+
+async function getAuthedEmail(req: Request): Promise<string | null> {
+  return (await getAuthedOrderUser(req))?.email ?? null;
 }
 
 router.post("/create-order", createOrderLimiter, async (req, res) => {
   try {
-    const email = await getAuthedEmail(req);
+    const actor = await getAuthedOrderUser(req);
+    const email = actor?.email;
     if (!email) {
       res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
 
+    const wallet = req.body?.payment_method === "wallet";
+    let approvedPartner = false;
+    if (PARTNER_ENABLED() && actor?.id) {
+      const {data,error} = await supabaseAdmin.from("partner_accounts").select("partner_status")
+        .eq("user_id",actor.id).maybeSingle();
+      if (error) { res.status(503).json({error:"Impossible de vérifier le compte partenaire."}); return; }
+      approvedPartner = data?.partner_status === "APPROVED";
+    }
+    if ((wallet || req.body?.checkout_key) && !approvedPartner) {
+      res.status(403).json({error:"Le portefeuille est réservé aux partenaires approuvés."}); return;
+    }
     const { items } = req.body;
     const customerWhatsapp = typeof req.body?.customer_whatsapp === "string"
       ? normalizeAlgerianMobile(req.body.customer_whatsapp.slice(0, 40))
@@ -323,12 +341,12 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       .eq("assigned_email", email)
       .eq("status", "pending")
       .eq("payment_status", "unpaid");
-    if (pendingCountError) {
+    if (pendingCountError && !wallet) {
       req.log?.error({ code: pendingCountError.code }, "Unable to count pending unpaid orders");
       res.status(503).json({ error: "La création de commande est momentanément indisponible." });
       return;
     }
-    if ((pendingOrderCount || 0) >= 3) {
+    if (!approvedPartner && !wallet && (pendingOrderCount || 0) >= 3) {
       res.status(429).json({ error: "Trop de paiements en attente. Réessayez dans 30 minutes." });
       return;
     }
@@ -382,7 +400,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     }
     const finalAmount = Math.max(0, pricing.amount - discountAmount);
 
-    const { data: inserted, error: insertError } = await supabaseAdmin.from("orders").insert({
+    const draft = {
       order_id: orderId,
       assigned_email: email,
       items: orderItems,
@@ -397,7 +415,52 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       marketing_consent_at: marketingConsent ? new Date().toISOString() : null,
       consent_version: marketingConsent ? MARKETING_CONSENT_VERSION : null,
       customer_whatsapp: customerWhatsapp || null,
-    }).select("order_id");
+    };
+
+    if (approvedPartner) {
+      const key = req.body?.checkout_key;
+      const expected = req.body?.expected_total;
+      if (typeof key !== "string" || !uuidPattern.test(key) || typeof expected !== "number" || !Number.isFinite(expected) || expected < 0) {
+        res.status(409).json({error:"Actualise les prix partenaire avant de payer.",code:"PARTNER_QUOTE_REQUIRED"}); return;
+      }
+      const {data:order,error} = await supabaseAdmin.rpc("create_partner_order",{
+        p_user:actor!.id,p_key:key,p_order:draft,p_wallet:wallet,p_expected:expected,
+        p_promo_client_hash:clientPromoHash(email),
+      });
+      if (error) {
+        const code = String(error.message || "");
+        const failures: Record<string,[number,string]> = {
+          PARTNER_QUOTE_CHANGED:[409,"Le tarif a changé. Consulte le nouveau total avant de continuer."],
+          WALLET_INSUFFICIENT_BALANCE:[409,"Ton solde est insuffisant."],
+          PARTNER_REQUEST_CONFLICT:[409,"Cette tentative de paiement existe déjà."],
+          PARTNER_PROMO_UNAVAILABLE:[409,"Ce code promo n’est plus disponible."],
+          PARTNER_USE_WALLET:[409,"Utilise le portefeuille pour valider cette commande à 0 DA."],
+          PARTNER_NOT_APPROVED:[403,"Candidature partenaire non approuvée."],
+        };
+        const failure=failures[code];
+        if (failure) {res.status(failure[0]).json({error:failure[1],code});return;}
+        if (code.includes("PENDING_ORDER_LIMIT")) {
+          res.status(429).json({error:"Trop de paiements en attente. Réessayez dans 30 minutes."});return;
+        }
+        req.log?.error({code:error.code},"Partner order transaction failed");
+        res.status(503).json({error:"La création de la commande est momentanément indisponible."});return;
+      }
+      if (wallet && order.payment_status === "paid" && order.order_status === "pending" && !order.replayed) {
+        try {
+          const result = await fulfillVerifiedPayment({
+            order_id:order.order_id,assigned_email:email,items:orderItems,amount:order.amount,
+            status:"pending",payment_status:"paid",renewal_order_id:renewalOrderId,marketing_consent:marketingConsent,
+          },"partner_wallet",{paymentTransitioned:true});
+          Object.assign(order,result);
+        } catch {
+          // The paid order is durable; existing stock, activation and email jobs can recover.
+          req.log?.warn({orderId:order.order_id},"Wallet order awaiting fulfillment retry");
+        }
+      }
+      res.status(order.replayed ? 200 : 201).json(order);return;
+    }
+
+    const { data: inserted, error: insertError } = await supabaseAdmin.from("orders").insert(draft).select("order_id");
 
     if (insertError) {
       if (insertError.message?.includes("PENDING_ORDER_LIMIT")) {
@@ -734,7 +797,8 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
     const buildOrdersQuery = () => {
       let query = supabaseAdmin
         .from("orders")
-        .select("id, order_id, assigned_email, customer_whatsapp, amount, status, payment_status, items, created_at, expires_at, activated_at", { count: "exact" })
+        .select("id, order_id, assigned_email, customer_whatsapp, amount, status, payment_status, items, created_at, expires_at, activated_at"
+          + (PARTNER_SCHEMA_READY() ? ",partner_wallet_paid,partner_wallet_refunded_at" : ""), { count: "exact" })
         .order(selectedSort.column, { ascending: selectedSort.ascending });
       if (statusFilter) query = query.eq("status", statusFilter);
       if (followUpFilter) {
@@ -818,6 +882,24 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
       return res.status(400).json({ error: "Identifiant de commande invalide." });
     }
     if (status && !['pending', 'active', 'completed', 'cancelled'].includes(status)) return res.status(400).json({ error: "Statut invalide." });
+
+    if (PARTNER_SCHEMA_READY()) {
+      const {data: walletOrder,error: walletError}=await supabaseAdmin.from("orders")
+        .select("partner_wallet_paid,partner_wallet_refunded_at,status").eq("order_id",order_id).maybeSingle();
+      if (walletError) return res.status(503).json({error:"Impossible de vérifier le paiement portefeuille."});
+      if (walletOrder?.partner_wallet_paid && walletOrder.partner_wallet_refunded_at) {
+        return status === "cancelled"
+          ? res.json({success:true,status:"cancelled",wallet_refunded:true})
+          : res.status(409).json({error:"Une commande remboursée ne peut pas être réactivée."});
+      }
+      if (walletOrder?.partner_wallet_paid && status === "cancelled") {
+        const {error}=await supabaseAdmin.rpc("refund_partner_wallet_order",{p_order:order_id});
+        if (error?.message==="WALLET_REFUND_NOT_ELIGIBLE") return res.status(409).json({error:"Cette commande a déjà été livrée ou un profil lui est attribué."});
+        if (error) return res.status(503).json({error:"Le remboursement n’a pas pu être confirmé."});
+        void appendAuditLog({action:"partner_wallet_refund",actorUserId:userData.user.id,targetType:"order",targetId:order_id});
+        return res.json({success:true,status:"cancelled",wallet_refunded:true});
+      }
+    }
 
     let { data: currentOrder, error: currentOrderError } = await supabaseAdmin
       .from("orders")
