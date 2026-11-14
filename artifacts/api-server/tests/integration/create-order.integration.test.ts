@@ -74,6 +74,7 @@ describe("POST /api/create-order", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (originalCredentialsKey === undefined) delete process.env.CLIENT_CREDENTIALS_KEY;
     else process.env.CLIENT_CREDENTIALS_KEY = originalCredentialsKey;
   });
@@ -113,6 +114,34 @@ describe("POST /api/create-order", () => {
     expect(res.status).toBe(201);
     expect(res.body.order_id).toMatch(/^ORD-/);
     expect(res.body.amount).toBe(600);
+  });
+
+  it("transmet uniquement les prix catalogue et le compte authentifié à la transaction portefeuille", async () => {
+    vi.stubEnv("PARTNER_PROGRAM_ENABLED","true");
+    fromMock.mockReturnValue(renewalOrderSelectStub({partner_status:"APPROVED"}));
+    rpcMock.mockResolvedValue({data:{order_id:"ORD-wallet-test",amount:570,payment_status:"paid",order_status:"pending",replayed:true},error:null});
+    const checkout_key="219ae1fb-9200-4fc1-9ab6-5c7cc8dac57f";
+    const response=await request(app).post("/api/create-order").set("Authorization",`Bearer ${VALID_TOKEN}`).send({
+      items:[{name:"Netflix Premium 1 mois",quantity:1,price:1}],amount:1,expected_total:570,checkout_key,
+      partner_user_id:"another-user",wallet_balance:99999,payment_method:"wallet",
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.payment_status).toBe("paid");
+    expect(rpcMock).toHaveBeenCalledWith("create_partner_order",expect.objectContaining({
+      p_user:"user-123",p_key:checkout_key,p_expected:570,p_wallet:true,
+      p_order:expect.objectContaining({amount:600,subtotal_amount:600,items:[{name:"Netflix Premium 1 mois",quantity:1}]}),
+    }));
+    expect(rpcMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuse le portefeuille à un compte en attente", async () => {
+    vi.stubEnv("PARTNER_PROGRAM_ENABLED","true");
+    fromMock.mockReturnValue(renewalOrderSelectStub({partner_status:"PENDING"}));
+    const response=await request(app).post("/api/create-order").set("Authorization",`Bearer ${VALID_TOKEN}`).send({
+      items:[{name:"Netflix Premium 1 mois",quantity:1}],payment_method:"wallet",
+    });
+    expect(response.status).toBe(403);
+    expect(rpcMock).not.toHaveBeenCalled();
   });
 
   it("ne supprime plus une ancienne commande sans vérification SlickPay", async () => {

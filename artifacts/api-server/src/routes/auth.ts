@@ -19,6 +19,8 @@ import {
 } from "../lib/sessionCookies";
 import { normalizeAlgerianMobile } from "../lib/phone";
 import { getPurchaseEmailConfig, sendPasswordRecoveryEmail } from "../lib/purchaseEmail";
+import { PARTNER_ENABLED, AUTO_APPROVE_PARTNERS } from "../config/partnerTiers";
+import { partnerQuestionnaire } from "./partners";
 
 const router: IRouter = Router();
 const refreshSession = createSessionRefresher(() => createAuthClient());
@@ -149,6 +151,12 @@ router.post("/register", registrationLimiter, async (req, res) => {
       res.status(400).json({ error: "Numéro de téléphone invalide." });
       return;
     }
+    const wantsPartner = req.body?.partner_application !== undefined;
+    const partnerAnswers = wantsPartner ? partnerQuestionnaire.safeParse(req.body.partner_application) : null;
+    if (wantsPartner && (!PARTNER_ENABLED() || !partnerAnswers?.success)) {
+      res.status(400).json({error:"Vérifie les réponses au questionnaire."});
+      return;
+    }
 
     const { data, error } = await supabase.auth.signUp({
       email: normalizedEmail,
@@ -169,11 +177,27 @@ router.post("/register", registrationLimiter, async (req, res) => {
       return;
     }
 
+    let partnerApplicationSaved = false;
+    // Supabase can return an obfuscated user on a duplicate signup. An empty
+    // identities array is not proof a new account was created.
+    if (partnerAnswers?.success && data.user?.id) {
+      if (data.session) {
+        const {error: partnerError} = await supabaseAdmin.rpc("submit_partner_application", {
+          p_user:data.user.id,p_email:normalizedEmail,p_answers:partnerAnswers.data,p_auto:AUTO_APPROVE_PARTNERS(),
+        });
+        partnerApplicationSaved = !partnerError;
+      } else if (data.user.identities?.length) {
+        const {error: partnerError} = await supabaseAdmin.from("partner_signup_drafts")
+          .insert({user_id:data.user.id,answers:partnerAnswers.data});
+        partnerApplicationSaved = !partnerError;
+      }
+    }
     if (data.session) {
       await setSessionCookies(res, { ...data.session, user: data.user! }, true);
     }
     res.status(201).json({
       authenticated: Boolean(data.session),
+      ...(data.session && wantsPartner ? {partner_application_saved:partnerApplicationSaved} : {}),
       message: "Compte créé. Vérifiez votre email pour confirmer l'inscription.",
       user: publicUser(data.user),
     });
@@ -213,10 +237,28 @@ router.post("/login", loginLimiter, async (req, res) => {
     // Persistent sessions are the default for the customer experience. A
     // caller can still explicitly opt out on a shared or public device.
     await setSessionCookies(res, { ...data.session, user: data.user }, req.body?.remember !== false);
+    let partnerApplicationSubmitted = false;
+    if (PARTNER_ENABLED() && data.user.email) {
+      try {
+        const {data: draft} = await supabaseAdmin.from("partner_signup_drafts")
+          .select("answers").eq("user_id",data.user.id).maybeSingle();
+        const answers = partnerQuestionnaire.safeParse(draft?.answers);
+        if (answers.success) {
+          const {error: partnerError} = await supabaseAdmin.rpc("submit_partner_application",{
+            p_user:data.user.id,p_email:data.user.email.trim().toLowerCase(),p_answers:answers.data,p_auto:AUTO_APPROVE_PARTNERS(),
+          });
+          partnerApplicationSubmitted = !partnerError || partnerError.message === "PARTNER_ALREADY_APPLIED";
+        }
+      } catch {
+        // A transient partner failure must not stop account sign-in.
+        req.log?.warn("Partner signup draft could not be finalized");
+      }
+    }
 
     res.json({
       message: "Connexion réussie.",
       authenticated: true,
+      ...(partnerApplicationSubmitted ? {partner_application_submitted:true} : {}),
       expires_at: data.session.expires_at,
       user: publicUser(data.user),
     });

@@ -6,10 +6,10 @@ import { requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
 import { appendAuditLog } from "../lib/auditLog";
 import { isTemporaryAuthError } from "../lib/authAvailability";
 import { createDeposit, observeDeposit } from "../lib/partnerPayments";
-import { AUTO_APPROVE_PARTNERS, MAX_WALLET_DEPOSIT, MIN_UNLOCK_DEPOSIT, PARTNER_ENABLED, uuidPattern } from "../config/partnerTiers";
+import { AUTO_APPROVE_PARTNERS, MAX_WALLET_DEPOSIT, MIN_UNLOCK_DEPOSIT, PARTNER_ENABLED, PARTNER_SCHEMA_READY, uuidPattern } from "../config/partnerTiers";
 
 const uuid = z.string().regex(uuidPattern);
-const questionnaire = z.object({
+export const partnerQuestionnaire = z.object({
   monthly_volume:z.enum(["UNDER_5000","5000_15000","15000_50000","OVER_50000"]),
   sales_channel:z.enum(["WEB","MESSAGING","SOCIAL","PHYSICAL","OTHER"]),
   profile:z.enum(["INDEPENDENT","BUSINESS","CREATOR"]),
@@ -30,6 +30,10 @@ router.get("/partner/config", (_req,res)=>res.json({enabled:PARTNER_ENABLED()}))
 
 function gate(_req: Request,res: Response,next: () => void) {
   if (PARTNER_ENABLED()) next();
+  else res.status(404).json({error:"Programme partenaire indisponible.",code:"PARTNER_DISABLED"});
+}
+function ledgerGate(_req: Request,res: Response,next: () => void) {
+  if (PARTNER_SCHEMA_READY()) next();
   else res.status(404).json({error:"Programme partenaire indisponible.",code:"PARTNER_DISABLED"});
 }
 async function user(req: Request,res: Response) {
@@ -67,7 +71,7 @@ router.get("/partner",gate,readLimiter,async (req,res)=>{
 router.post("/partner/applications",gate,writeLimiter,async (req,res)=>{
   try {
     const actor=await user(req,res); if(!actor) return;
-    const parsed=questionnaire.safeParse(req.body);
+    const parsed=partnerQuestionnaire.safeParse(req.body);
     if(!parsed.success) return res.status(400).json({error:"Vérifie les réponses au questionnaire."});
     const {data,error}=await db.rpc("submit_partner_application",{p_user:actor.id,p_email:actor.email,p_answers:parsed.data,p_auto:AUTO_APPROVE_PARTNERS()});
     if(error?.message==="PARTNER_ALREADY_APPLIED") return res.status(409).json({error:"Une candidature existe déjà."});
@@ -76,7 +80,7 @@ router.post("/partner/applications",gate,writeLimiter,async (req,res)=>{
   } catch {return notAvailable(res);}
 });
 
-router.get("/partner/wallet",gate,readLimiter,async (req,res)=>{
+router.get("/partner/wallet",ledgerGate,readLimiter,async (req,res)=>{
   try {
     const actor=await user(req,res); if(!actor) return;
     const offset=page(req.query.offset);
@@ -104,7 +108,7 @@ router.post("/partner/wallet/deposits",gate,writeLimiter,async (req,res)=>{
   }
 });
 
-router.post("/partner/wallet/deposits/:id/verify",gate,writeLimiter,async (req,res)=>{
+router.post("/partner/wallet/deposits/:id/verify",ledgerGate,writeLimiter,async (req,res)=>{
   try {
     const actor=await user(req,res); if(!actor) return;
     if(!uuid.safeParse(req.params.id).success) return res.sendStatus(404);

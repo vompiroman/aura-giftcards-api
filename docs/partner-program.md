@@ -2,6 +2,7 @@
 
 ## Architecture
 - Supabase Auth reste la source d’identité. Les comptes partenaires sont une extension 1:1 de `auth.users`, sans données financières dans les métadonnées utilisateur.
+- Si Supabase demande de confirmer l’e-mail, le questionnaire est conservé côté serveur et soumis à la première connexion, même depuis un autre appareil.
 - L’API Express garde les prix catalogue, contrôles administrateur et sessions existants. Le navigateur ne propose qu’un montant attendu : il ne peut fixer ni solde, ni taux, ni total facturé.
 - Le registre DZD utilise des montants décimaux exacts. Une écriture par opération, un verrou par compte et des clés de rejeu empêchent deux confirmations ou deux débits de produire deux mouvements.
 - Les seuils et taux sont centralisés dans `partner_tiers`. Un dépôt confirmé en une seule fois de 3 000 DA débloque définitivement les paliers. Seules les commandes partenaire payées augmentent le cumul, qu’elles soient réglées par SlickPay ou par portefeuille.

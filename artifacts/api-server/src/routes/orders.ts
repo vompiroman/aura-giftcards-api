@@ -335,18 +335,18 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       return;
     }
 
-    const { count: pendingOrderCount, error: pendingCountError } = await supabaseAdmin
+    const { count: pendingOrderCount, error: pendingCountError } = approvedPartner ? {count:null,error:null} : await supabaseAdmin
       .from("orders")
       .select("id", { count: "exact", head: true })
       .eq("assigned_email", email)
       .eq("status", "pending")
       .eq("payment_status", "unpaid");
-    if (pendingCountError && !wallet) {
+    if (pendingCountError) {
       req.log?.error({ code: pendingCountError.code }, "Unable to count pending unpaid orders");
       res.status(503).json({ error: "La création de commande est momentanément indisponible." });
       return;
     }
-    if (!approvedPartner && !wallet && (pendingOrderCount || 0) >= 3) {
+    if ((pendingOrderCount || 0) >= 3) {
       res.status(429).json({ error: "Trop de paiements en attente. Réessayez dans 30 minutes." });
       return;
     }

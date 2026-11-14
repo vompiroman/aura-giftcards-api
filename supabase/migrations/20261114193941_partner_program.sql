@@ -38,6 +38,17 @@ create unique index partner_applications_one_pending on public.partner_applicati
 create index partner_applications_user_history on public.partner_applications(user_id, submitted_at desc);
 create index partner_applications_admin_queue on public.partner_applications(status, submitted_at desc, id);
 
+-- Registration with email confirmation has no authenticated browser session.
+-- Keep only the answers, keyed to a newly created Auth user, until login.
+create table public.partner_signup_drafts (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  answers jsonb not null check (jsonb_typeof(answers)='object'),
+  created_at timestamptz not null default now()
+);
+alter table public.partner_signup_drafts enable row level security;
+revoke all on public.partner_signup_drafts from public, anon, authenticated;
+grant select,insert,delete on public.partner_signup_drafts to service_role;
+
 alter table public.orders
   add column partner_user_id uuid references public.partner_accounts(user_id) on delete restrict,
   add column partner_checkout_key uuid,
@@ -121,6 +132,7 @@ begin
     btrim(p_answers->>'products'),btrim(p_answers->>'quick_contact'),nullif(btrim(p_answers->>'additional_info'),''),
     v_status,case when p_auto then now() end);
   update public.partner_accounts set partner_status = v_status where user_id = p_user;
+  delete from public.partner_signup_drafts where user_id = p_user;
   return v_status;
 end $$;
 
