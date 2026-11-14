@@ -1,6 +1,8 @@
 import { slickPayInvoiceDetails, type SlickPayInvoiceDetails } from "./payments";
 
-const SLICKPAY_INVOICE_URL = "https://prodapi.slick-pay.com/api/v2/users/invoices";
+export const slickPayInvoiceUrl = () => process.env.SLICKPAY_SANDBOX === "true"
+  ? "https://devapi.slick-pay.com/api/v2/users/invoices"
+  : "https://prodapi.slick-pay.com/api/v2/users/invoices";
 const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
 
 export function isAllowedPaymentUrl(value: unknown): value is string {
@@ -33,7 +35,7 @@ export async function createSlickPayDepositInvoice(depositId: string,email: stri
   returnUrl.hash = "partner";
   const account = configuredSlickPayAccount();
   if (process.env.SLICKPAY_ACCOUNT_UUID?.trim() && !account) throw new Error("SLICKPAY_SETUP_MISSING");
-  const response = await fetch(SLICKPAY_INVOICE_URL,{
+  const response = await fetch(slickPayInvoiceUrl(),{
     method:"POST",redirect:"error",signal:AbortSignal.timeout(15_000),
     headers:{Accept:"application/json","Content-Type":"application/json",Authorization:`Bearer ${apiKey}`},
     body:JSON.stringify({amount,url:returnUrl.toString(),...(account ? {account} : {}),
@@ -84,7 +86,7 @@ export async function fetchSlickPayInvoice(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${SLICKPAY_INVOICE_URL}/${encodeURIComponent(invoiceId)}`, {
+    const response = await fetch(`${slickPayInvoiceUrl()}/${encodeURIComponent(invoiceId)}`, {
       headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
       signal: controller.signal,
     });

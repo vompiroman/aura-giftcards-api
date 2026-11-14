@@ -181,15 +181,19 @@ router.post("/register", registrationLimiter, async (req, res) => {
     // Supabase can return an obfuscated user on a duplicate signup. An empty
     // identities array is not proof a new account was created.
     if (partnerAnswers?.success && data.user?.id) {
-      if (data.session) {
-        const {error: partnerError} = await supabaseAdmin.rpc("submit_partner_application", {
-          p_user:data.user.id,p_email:normalizedEmail,p_answers:partnerAnswers.data,p_auto:AUTO_APPROVE_PARTNERS(),
-        });
-        partnerApplicationSaved = !partnerError;
-      } else if (data.user.identities?.length) {
-        const {error: partnerError} = await supabaseAdmin.from("partner_signup_drafts")
-          .insert({user_id:data.user.id,answers:partnerAnswers.data});
-        partnerApplicationSaved = !partnerError;
+      try {
+        if (data.session) {
+          const {error: partnerError} = await supabaseAdmin.rpc("submit_partner_application", {
+            p_user:data.user.id,p_email:normalizedEmail,p_answers:partnerAnswers.data,p_auto:AUTO_APPROVE_PARTNERS(),
+          });
+          partnerApplicationSaved = !partnerError;
+        } else if (data.user.identities?.length) {
+          const {error: partnerError} = await supabaseAdmin.from("partner_signup_drafts")
+            .insert({user_id:data.user.id,answers:partnerAnswers.data});
+          if (partnerError) req.log?.warn({code:partnerError.code},"Partner questionnaire could not be stored");
+        }
+      } catch {
+        req.log?.warn("Partner questionnaire could not be stored");
       }
     }
     if (data.session) {

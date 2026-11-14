@@ -1,5 +1,6 @@
 import { supabaseAdmin as supabase } from "../lib/supabase";
 import { fulfillVerifiedPayment, type PayableOrder } from "../lib/paymentFulfillment";
+import { PARTNER_SCHEMA_READY } from "../config/partnerTiers";
 
 const WAITING_ORDER_LIMIT = 100;
 const ORDER_COLUMNS = "order_id, assigned_email, amount, status, payment_status, promo_code_id, renewal_order_id, items, marketing_consent, meta_purchase_sent_at, created_at";
@@ -48,16 +49,18 @@ export async function fulfillPaidOrdersWaitingForStock(
     errors: 0,
   };
 
+  type StockOrder = PayableOrder & { created_at: string; partner_wallet_paid?: boolean };
   const { data, error } = await supabase
     .from("orders")
-    .select(ORDER_COLUMNS)
+    .select(ORDER_COLUMNS + (PARTNER_SCHEMA_READY() ? ",partner_wallet_paid" : ""))
     .eq("status", "pending")
     .eq("payment_status", "paid")
     .order("created_at", { ascending: true })
     .limit(WAITING_ORDER_LIMIT);
   if (error) throw error;
 
-  for (const order of (data || []) as Array<PayableOrder & { created_at: string }>) {
+  const orders = (data ?? []) as unknown as StockOrder[];
+  for (const order of orders) {
     const required = netflixQuantity(order.items);
     if (required === 0) continue;
 
@@ -66,7 +69,7 @@ export async function fulfillPaidOrdersWaitingForStock(
       if (assigned >= required) continue;
       summary.checked += 1;
 
-      const result = await fulfillVerifiedPayment(order, "slickpay_reconcile", {
+      const result = await fulfillVerifiedPayment(order, order.partner_wallet_paid ? "partner_wallet" : "slickpay_reconcile", {
         paymentTransitioned: false,
       });
       if (result.waiting_for_stock) {

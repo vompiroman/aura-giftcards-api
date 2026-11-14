@@ -12,8 +12,8 @@
 
 ## Mise en service
 1. Appliquer `supabase/migrations/20261114193941_partner_program.sql` sur la base de test puis sur la cible. Vérifier les tables, contraintes et permissions (rôle serveur uniquement). Aucun changement n’est nécessaire chez SlickPay : le service réemploie les variables API, URL de retour et webhook existantes.
-2. Déployer l’API et le site. Tant que `PARTNER_PROGRAM_ENABLED` est absent, le site ne présente pas le programme et l’API n’interroge pas le nouveau schéma.
-3. Configurer `AUTO_APPROVE_PARTNERS=false` (validation admin par défaut) ou `true` (acceptation immédiate après questionnaire), puis `PARTNER_PROGRAM_ENABLED=true` sur Render après avoir validé le parcours de paiement de test.
+2. En préproduction uniquement, utiliser `SLICKPAY_SANDBOX=true` avec un compte et des clés de test SlickPay, une base isolée et les URL de retour et de webhook de préproduction. Vérifier au moins une recharge et un achat (y compris le callback).
+3. Déployer l’API et le site. Tant que `PARTNER_PROGRAM_ENABLED` est absent, le site ne présente pas le programme et l’API n’interroge pas le nouveau schéma. Configurer `AUTO_APPROVE_PARTNERS=false` (validation admin par défaut) ou `true` (acceptation immédiate après questionnaire), puis `PARTNER_PROGRAM_ENABLED=true` sur Render une fois le parcours de test validé.
 4. Pour suspendre les nouvelles opérations après déploiement, utiliser `PARTNER_PROGRAM_ENABLED=false` : les factures déjà créées et les remboursements restent traitables. Ne pas supprimer le schéma ni retirer la variable si des soldes ou factures existent.
 
 Ne pas exposer de clé de rôle serveur ou SlickPay côté site. Vérifier les règles de remboursement et la configuration du compte commerçant avant l’ouverture publique des recharges.
