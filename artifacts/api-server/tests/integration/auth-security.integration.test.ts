@@ -170,8 +170,10 @@ describe("sécurité de l'authentification", () => {
     adminSignOutMock.mockResolvedValue({ error: null });
     const payload = { token_hash: tokenHash, password: "mot-de-passe-fort-2026" };
 
-    expect((await request(app).post("/api/reset-password").send(payload)).status).toBe(200);
-    expect((await request(app).post("/api/reset-password").send(payload)).status).toBe(400);
+    const reset = () => request(app).post("/api/reset-password")
+      .set("X-Forwarded-For", "192.0.2.24").send(payload);
+    expect((await reset()).status).toBe(200);
+    expect((await reset()).status).toBe(400);
     expect(verifyOtpMock).toHaveBeenCalledWith({ type: "recovery", token_hash: tokenHash });
     expect(axiosPutMock).toHaveBeenCalledTimes(1);
     expect(adminSignOutMock).toHaveBeenCalledWith(token, "global");
