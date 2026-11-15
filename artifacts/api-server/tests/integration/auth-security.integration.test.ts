@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
+import { WEB_SESSION_COOKIE } from "../../src/lib/webSession";
 
 const { generateLinkMock, sendRecoveryEmailMock, signUpMock, signInMock, getUserMock, verifyOtpMock, refreshSessionMock, adminSignOutMock, axiosPutMock, partnerFrom, partnerRpc } = vi.hoisted(() => ({
   generateLinkMock: vi.fn(),
@@ -165,15 +166,21 @@ describe("sécurité de l'authentification", () => {
     const token = accessTokenWithAmr("recovery");
     verifyOtpMock
       .mockResolvedValueOnce({ data: { session: { access_token: token }, user: { id: "user-1" } }, error: null })
-      .mockResolvedValueOnce({ data: { session: null, user: null }, error: { code: "otp_expired" } });
+      .mockResolvedValueOnce({ data: { session: null, user: null }, error: { code: "otp_expired", status: 403 } })
+      .mockResolvedValueOnce({ data: { session: null, user: null }, error: { code: "unexpected_failure", status: 503 } });
     axiosPutMock.mockResolvedValue({ data: { id: "user-1" } });
     adminSignOutMock.mockResolvedValue({ error: null });
     const payload = { token_hash: tokenHash, password: "mot-de-passe-fort-2026" };
 
     const reset = () => request(app).post("/api/reset-password")
       .set("X-Forwarded-For", "192.0.2.24").send(payload);
-    expect((await reset()).status).toBe(200);
-    expect((await reset()).status).toBe(400);
+    const success = await reset();
+    expect(success.status).toBe(200);
+    expect(success.headers["set-cookie"]).toEqual(expect.arrayContaining([expect.stringContaining(`${WEB_SESSION_COOKIE}=;`)]));
+    const replay = await reset();
+    expect(replay.status).toBe(400);
+    expect(replay.body.code).toBe("RECOVERY_LINK_INVALID");
+    expect((await reset()).status).toBe(503);
     expect(verifyOtpMock).toHaveBeenCalledWith({ type: "recovery", token_hash: tokenHash });
     expect(axiosPutMock).toHaveBeenCalledTimes(1);
     expect(adminSignOutMock).toHaveBeenCalledWith(token, "global");

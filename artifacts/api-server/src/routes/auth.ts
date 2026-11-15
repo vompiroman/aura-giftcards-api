@@ -424,6 +424,10 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
 });
 
 router.post("/reset-password", recoveryLimiter, async (req, res) => {
+  const invalidRecoveryLink = () => res.status(400).json({
+    code: "RECOVERY_LINK_INVALID",
+    error: "Lien de réinitialisation invalide ou expiré.",
+  });
   try {
     const { token: legacyToken, token_hash: tokenHash, password } = req.body;
     const usingHash = tokenHash !== undefined;
@@ -447,8 +451,13 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
     if (usingHash) {
       // A mail scanner may open the link. Consume it only when the form is submitted.
       const { data, error } = await createAuthClient().auth.verifyOtp({ type: "recovery", token_hash: tokenHash });
+      if (isTemporaryAuthError(error)) {
+        req.log.warn({ code: error?.code }, "Supabase recovery verification temporarily unavailable");
+        res.status(503).json({ error: "Service d'authentification indisponible." });
+        return;
+      }
       if (error || !data.session?.access_token || !data.user?.id) {
-        res.status(400).json({ error: "Lien de réinitialisation invalide ou expiré." });
+        invalidRecoveryLink();
         return;
       }
       token = data.session.access_token;
@@ -457,7 +466,7 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
       token = legacyToken;
       const { data, error } = await supabase.auth.getUser(token);
       if (error || !data.user?.id || !isRecentRecoveryToken(token)) {
-        res.status(400).json({ error: "Lien de réinitialisation invalide ou expiré." });
+        invalidRecoveryLink();
         return;
       }
       userId = data.user.id;
@@ -477,6 +486,7 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
     }
 
     await webSessions().revokeUser(userId);
+    clearSessionCookies(res);
     res.json({ message: "Mot de passe réinitialisé avec succès." });
   } catch (err: any) {
     req.log.warn({ message: err instanceof Error ? err.message : "unknown" }, "Reset-password request failed");
