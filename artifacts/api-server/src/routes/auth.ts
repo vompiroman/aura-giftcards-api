@@ -19,6 +19,7 @@ import {
 } from "../lib/sessionCookies";
 import { normalizeAlgerianMobile } from "../lib/phone";
 import { getPurchaseEmailConfig, sendPasswordRecoveryEmail } from "../lib/purchaseEmail";
+import { issuePasswordRecoveryToken, readPasswordRecoveryToken } from "../lib/passwordRecoveryToken";
 import { PARTNER_ENABLED, AUTO_APPROVE_PARTNERS } from "../config/partnerTiers";
 import { partnerQuestionnaire } from "./partners";
 
@@ -74,30 +75,6 @@ function normalizeEmail(value: unknown): string | null {
 
 function validPassword(value: unknown): value is string {
   return typeof value === "string" && value.length >= 12 && value.length <= 128;
-}
-
-function validRecoveryHash(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9_-]{20,512}$/.test(value);
-}
-
-function isRecentRecoveryToken(token: string): boolean {
-  try {
-    const [, encodedPayload] = token.split(".");
-    if (!encodedPayload) return false;
-    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString()) as {
-      amr?: Array<{ method?: unknown; timestamp?: unknown }>;
-    };
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    return Array.isArray(payload.amr) && payload.amr.some((entry) => {
-      const timestamp = typeof entry?.timestamp === "number" ? entry.timestamp : Number.NaN;
-      return entry?.method === "recovery"
-        && Number.isFinite(timestamp)
-        && timestamp <= nowSeconds + 60
-        && nowSeconds - timestamp <= 15 * 60;
-    });
-  } catch {
-    return false;
-  }
 }
 
 function authApiKey(): string | null {
@@ -374,6 +351,7 @@ router.post("/update-profile", profileLimiter, async (req, res) => {
 });
 
 router.post("/forgot-password", recoveryLimiter, async (req, res) => {
+  const requestedAt = Date.now();
   try {
     const { email } = req.body;
     const normalizedEmail = normalizeEmail(email);
@@ -387,9 +365,9 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
       email: normalizedEmail,
     });
 
-    const tokenHash = data?.properties?.hashed_token;
+    const recoveryToken = error ? null : issuePasswordRecoveryToken(data?.properties?.hashed_token, requestedAt);
     const emailConfig = getPurchaseEmailConfig();
-    if (error || !validRecoveryHash(tokenHash)) {
+    if (!recoveryToken) {
       req.log.warn({ code: error?.code || "RECOVERY_LINK_MISSING" }, "Supabase recovery link generation rejected");
       res.json({ message: "Si cet email existe, un lien de réinitialisation a été envoyé." });
       return;
@@ -407,7 +385,7 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
       const origin = configured?.protocol === "https:" && configured.hostname !== "localhost"
         ? configured.origin : "https://www.aura-stream.com";
       const link = new URL("/", origin);
-      link.hash = new URLSearchParams({ type: "recovery", token_hash: tokenHash }).toString();
+      link.hash = new URLSearchParams({ type: "recovery", token_hash: recoveryToken }).toString();
       await sendPasswordRecoveryEmail(normalizedEmail, link.href, emailConfig);
     } catch (emailError) {
       const code = typeof (emailError as { code?: unknown })?.code === "string"
@@ -429,13 +407,14 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
     error: "Lien de réinitialisation invalide ou expiré.",
   });
   try {
-    const { token: legacyToken, token_hash: tokenHash, password } = req.body;
-    const usingHash = tokenHash !== undefined;
-    const validToken = usingHash ? validRecoveryHash(tokenHash) && legacyToken === undefined
-      : typeof legacyToken === "string" && legacyToken.length >= 20 && legacyToken.length <= 4096
-        && !/[\r\n]/.test(legacyToken);
-    if (!validToken || !validPassword(password)) {
-      res.status(400).json({ error: "Token et mot de passe requis." });
+    const { token: legacyToken, token_hash: recoveryToken, password } = req.body;
+    if (!validPassword(password)) {
+      res.status(400).json({ error: "Le nouveau mot de passe doit contenir 12 à 128 caractères." });
+      return;
+    }
+    const tokenHash = legacyToken === undefined ? readPasswordRecoveryToken(recoveryToken) : null;
+    if (!tokenHash) {
+      invalidRecoveryLink();
       return;
     }
 
@@ -446,33 +425,20 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
       return;
     }
 
-    let token: string;
-    let userId: string;
-    if (usingHash) {
-      // A mail scanner may open the link. Consume it only when the form is submitted.
-      const { data, error } = await createAuthClient().auth.verifyOtp({ type: "recovery", token_hash: tokenHash });
-      if (isTemporaryAuthError(error)) {
-        req.log.warn({ code: error?.code }, "Supabase recovery verification temporarily unavailable");
-        res.status(503).json({ error: "Service d'authentification indisponible." });
-        return;
-      }
-      if (error || !data.session?.access_token || !data.user?.id) {
-        invalidRecoveryLink();
-        return;
-      }
-      token = data.session.access_token;
-      userId = data.user.id;
-    } else {
-      token = legacyToken;
-      const { data, error } = await supabase.auth.getUser(token);
-      if (error || !data.user?.id || !isRecentRecoveryToken(token)) {
-        invalidRecoveryLink();
-        return;
-      }
-      userId = data.user.id;
+    // A mail scanner may open the link. Consume it only when the form is submitted.
+    const { data, error } = await createAuthClient().auth.verifyOtp({ type: "recovery", token_hash: tokenHash });
+    if (isTemporaryAuthError(error)) {
+      req.log.warn({ code: error?.code }, "Supabase recovery verification temporarily unavailable");
+      res.status(503).json({ error: "Service d'authentification indisponible." });
+      return;
     }
+    if (error || !data.session?.access_token || !data.user?.id) {
+      invalidRecoveryLink();
+      return;
+    }
+    const token = data.session.access_token;
     
-    const response = await axios.put(`${supabaseUrl}/auth/v1/user`, { password }, {
+    await axios.put(`${supabaseUrl}/auth/v1/user`, { password }, {
       headers: {
         Authorization: `Bearer ${token}`,
         apikey: supabaseKey as string,
@@ -485,7 +451,7 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
       req.log.warn({ code: revokeError.code }, "Supabase session revocation failed after password reset");
     }
 
-    await webSessions().revokeUser(userId);
+    await webSessions().revokeUser(data.user.id);
     clearSessionCookies(res);
     res.json({ message: "Mot de passe réinitialisé avec succès." });
   } catch (err: any) {

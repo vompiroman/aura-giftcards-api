@@ -24,6 +24,10 @@ export class SessionUnavailable extends Error {
   constructor() { super("Service de connexion momentanément indisponible."); }
 }
 
+export function webSessionSecret(): string {
+  return process.env.SESSION_ENCRYPTION_KEY || process.env.INVENTORY_CREDENTIALS_KEY || process.env.CLIENT_CREDENTIALS_KEY || "";
+}
+
 export function sessionHash(cookie: unknown): string | null {
   if (typeof cookie !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(cookie)) return null;
   return crypto.createHash("sha256").update(cookie).digest("hex");
