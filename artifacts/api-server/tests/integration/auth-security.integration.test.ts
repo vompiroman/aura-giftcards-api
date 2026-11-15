@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { WEB_SESSION_COOKIE } from "../../src/lib/webSession";
+import { issuePasswordRecoveryToken, readPasswordRecoveryToken } from "../../src/lib/passwordRecoveryToken";
 
 const { generateLinkMock, sendRecoveryEmailMock, signUpMock, signInMock, getUserMock, verifyOtpMock, refreshSessionMock, adminSignOutMock, axiosPutMock, partnerFrom, partnerRpc } = vi.hoisted(() => ({
   generateLinkMock: vi.fn(),
@@ -71,6 +72,7 @@ describe("sécurité de l'authentification", () => {
     process.env.FRONTEND_URL = "https://www.aura-stream.com";
     process.env.SUPABASE_URL = "https://test-project.supabase.co";
     process.env.SUPABASE_ANON_KEY = "sb_publishable_test_key";
+    vi.stubEnv("SESSION_ENCRYPTION_KEY", "password-recovery-tests-session-secret");
   });
 
   it("renvoie une erreur client claire pour un corps JSON mal formé", async () => {
@@ -107,58 +109,50 @@ describe("sécurité de l'authentification", () => {
     expect(sendRecoveryEmailMock).toHaveBeenCalledTimes(1);
     expect(sendRecoveryEmailMock).toHaveBeenCalledWith(
       "client@example.com",
-      `https://www.aura-stream.com/#type=recovery&token_hash=${tokenHash}`,
+      expect.stringMatching(/^https:\/\/www\.aura-stream\.com\/#type=recovery&token_hash=v1\./),
       expect.objectContaining({ fromEmail: "admin@aura-stream.com" }),
     );
+    const emailLink = new URL(sendRecoveryEmailMock.mock.calls[0][1]);
+    expect(emailLink.href).not.toContain(tokenHash);
+    expect(readPasswordRecoveryToken(new URLSearchParams(emailLink.hash.slice(1)).get("token_hash"))).toBe(tokenHash);
   });
 
   it("rejette les jetons de récupération trop grands ou contenant un retour à la ligne", async () => {
     const tooLarge = await request(app)
       .post("/api/reset-password")
-      .send({ token: "a".repeat(4097), password: "mot-de-passe-fort-2026" });
+      .send({ token_hash: `v1.${"a".repeat(4097)}`, password: "mot-de-passe-fort-2026" });
     const injected = await request(app)
       .post("/api/reset-password")
-      .send({ token: `${"a".repeat(30)}\r\nInjected: value`, password: "mot-de-passe-fort-2026" });
+      .send({ token_hash: `v1.${"a".repeat(60)}\r\nInjected: value`, password: "mot-de-passe-fort-2026" });
 
     expect(tooLarge.status).toBe(400);
     expect(injected.status).toBe(400);
   });
 
   it("rejette un jeton de session ordinaire sur la route de réinitialisation", async () => {
-    getUserMock.mockResolvedValue({
-      data: { user: { id: "user-1", email: "client@example.com" } },
-      error: null,
-    });
-
     const response = await request(app)
       .post("/api/reset-password")
       .send({ token: accessTokenWithAmr("password"), password: "mot-de-passe-fort-2026" });
 
     expect(response.status).toBe(400);
     expect(response.body.error).toMatch(/invalide|expiré/i);
+    expect(getUserMock).not.toHaveBeenCalled();
     expect(adminSignOutMock).not.toHaveBeenCalled();
   });
 
-  it("accepte un jeton recovery récent puis révoque toutes les sessions", async () => {
-    getUserMock.mockResolvedValue({
-      data: { user: { id: "user-1", email: "client@example.com" } },
-      error: null,
-    });
-    axiosPutMock.mockResolvedValue({ data: { id: "user-1" } });
-    adminSignOutMock.mockResolvedValue({ error: null });
-    const token = accessTokenWithAmr("recovery");
-
-    const response = await request(app)
-      .post("/api/reset-password")
-      .send({ token, password: "mot-de-passe-fort-2026" });
-
-    expect(response.status).toBe(200);
-    expect(axiosPutMock).toHaveBeenCalledWith(
-      expect.stringContaining("/auth/v1/user"),
-      { password: "mot-de-passe-fort-2026" },
-      expect.objectContaining({ headers: expect.objectContaining({ Authorization: `Bearer ${token}` }) }),
-    );
-    expect(adminSignOutMock).toHaveBeenCalledWith(token, "global");
+  it("refuse les anciens liens et les jetons modifiés sans appeler Supabase", async () => {
+    const oldHash = "f".repeat(56);
+    const issued = issuePasswordRecoveryToken(oldHash, Date.now())!;
+    const changed = issued.slice(0, 10) + (issued[10] === "A" ? "B" : "A") + issued.slice(11);
+    const credentials = [{ token: accessTokenWithAmr("recovery") }, { token_hash: oldHash }, { token_hash: changed }];
+    for (const credential of credentials) {
+      const response = await request(app).post("/api/reset-password")
+        .set("X-Forwarded-For", "192.0.2.25").send({ ...credential, password: "mot-de-passe-fort-2026" });
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe("RECOVERY_LINK_INVALID");
+    }
+    expect(verifyOtpMock).not.toHaveBeenCalled();
+    expect(axiosPutMock).not.toHaveBeenCalled();
   });
 
   it("consomme le lien sur validation du formulaire et refuse sa réutilisation", async () => {
@@ -170,7 +164,7 @@ describe("sécurité de l'authentification", () => {
       .mockResolvedValueOnce({ data: { session: null, user: null }, error: { code: "unexpected_failure", status: 503 } });
     axiosPutMock.mockResolvedValue({ data: { id: "user-1" } });
     adminSignOutMock.mockResolvedValue({ error: null });
-    const payload = { token_hash: tokenHash, password: "mot-de-passe-fort-2026" };
+    const payload = { token_hash: issuePasswordRecoveryToken(tokenHash, Date.now()), password: "mot-de-passe-fort-2026" };
 
     const reset = () => request(app).post("/api/reset-password")
       .set("X-Forwarded-For", "192.0.2.24").send(payload);
@@ -183,23 +177,31 @@ describe("sécurité de l'authentification", () => {
     expect((await reset()).status).toBe(503);
     expect(verifyOtpMock).toHaveBeenCalledWith({ type: "recovery", token_hash: tokenHash });
     expect(axiosPutMock).toHaveBeenCalledTimes(1);
+    expect(axiosPutMock).toHaveBeenCalledWith(
+      expect.stringContaining("/auth/v1/user"),
+      { password: payload.password },
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: `Bearer ${token}` }) }),
+    );
     expect(adminSignOutMock).toHaveBeenCalledWith(token, "global");
   });
 
-  it("rejette un jeton recovery trop ancien", async () => {
-    getUserMock.mockResolvedValue({
-      data: { user: { id: "user-1", email: "client@example.com" } },
-      error: null,
-    });
+  it("accepte juste avant 15 minutes et rejette à 15 minutes", async () => {
+    const start = Date.now();
+    const hash = "f".repeat(56);
+    const issued = issuePasswordRecoveryToken(hash, start);
+    expect(readPasswordRecoveryToken(issued, start + 899_999)).toBe(hash);
+    expect(readPasswordRecoveryToken(issued, start + 900_000)).toBeNull();
 
     const response = await request(app)
       .post("/api/reset-password")
       .send({
-        token: accessTokenWithAmr("recovery", Math.floor(Date.now() / 1000) - 16 * 60),
+        token_hash: issuePasswordRecoveryToken(hash, Date.now() - 900_000),
         password: "mot-de-passe-fort-2026",
       });
 
     expect(response.status).toBe(400);
+    expect(response.body.code).toBe("RECOVERY_LINK_INVALID");
+    expect(verifyOtpMock).not.toHaveBeenCalled();
     expect(axiosPutMock).not.toHaveBeenCalled();
   });
 

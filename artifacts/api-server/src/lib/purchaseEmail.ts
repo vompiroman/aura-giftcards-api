@@ -2,6 +2,7 @@ import crypto from "crypto";
 import nodemailer from "nodemailer";
 import { buildInvoicePdf, invoiceFilename, type InvoiceOrder } from "./invoicePdf";
 import { resolveInvoiceLines } from "./invoiceLines";
+import { PASSWORD_RECOVERY_LIFETIME_MINUTES } from "./passwordRecoveryToken";
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -281,7 +282,7 @@ export async function sendPasswordRecoveryEmail(
       <tr><td style="padding:34px;">
         <div style="color:#d93646;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;">Sécurité du compte</div>
         <h1 style="margin:12px 0 14px;color:#23242a;font-size:27px;line-height:1.2;">Nouveau mot de passe</h1>
-        <p style="margin:0 0 24px;color:#62636a;font-size:15px;line-height:1.65;">Une demande de réinitialisation a été reçue pour votre compte. Utilisez le bouton ci-dessous pour choisir un nouveau mot de passe.</p>
+        <p style="margin:0 0 24px;color:#62636a;font-size:15px;line-height:1.65;">Utilisez le bouton ci-dessous pour choisir un nouveau mot de passe. Le lien est valable ${PASSWORD_RECOVERY_LIFETIME_MINUTES} minutes à compter de votre demande.</p>
         <p style="margin:0 0 26px;"><a href="${escapedLink}" style="display:inline-block;background:#d93646;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;padding:14px 22px;border-radius:10px;">Réinitialiser mon mot de passe</a></p>
         <p style="margin:0;color:#77747a;font-size:13px;line-height:1.6;">Si vous n’êtes pas à l’origine de cette demande, ignorez cet e-mail. Votre mot de passe actuel ne sera pas modifié.</p>
       </td></tr>
@@ -289,7 +290,7 @@ export async function sendPasswordRecoveryEmail(
     </table>
   </td></tr></table>
 </body></html>`;
-  const text = `Réinitialisez votre mot de passe Aura Stream\n\nOuvrez ce lien sécurisé : ${link}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.`;
+  const text = `Réinitialisez votre mot de passe Aura Stream\n\nCe lien est valable ${PASSWORD_RECOVERY_LIFETIME_MINUTES} minutes à compter de votre demande : ${link}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.`;
   const idempotencyKey = `recovery-${crypto.createHash("sha256").update(`${email}:${link}`).digest("hex").slice(0, 40)}`;
   return sendTransactionalMessage(config, {
     to: email,

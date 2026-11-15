@@ -1,5 +1,5 @@
 import { supabaseAdmin, createAuthClient } from "./supabase";
-import { createSessionCipher, createWebSessions, SessionUnavailable, type WebSessionStore } from "./webSession";
+import { createSessionCipher, createWebSessions, SessionUnavailable, webSessionSecret, type WebSessionStore } from "./webSession";
 
 const table = "web_sessions";
 function checked<T>({ data, error }: { data: T; error: unknown }): T {
@@ -37,7 +37,7 @@ export const webSessionStore: WebSessionStore = {
 let engine: ReturnType<typeof createWebSessions> | undefined;
 export function webSessions() {
   return engine ||= createWebSessions({ store: webSessionStore,
-    cipher: createSessionCipher(process.env.SESSION_ENCRYPTION_KEY || process.env.INVENTORY_CREDENTIALS_KEY || process.env.CLIENT_CREDENTIALS_KEY || ""),
+    cipher: createSessionCipher(webSessionSecret()),
     refresh: token => createAuthClient().auth.refreshSession({ refresh_token: token }),
   });
 }
