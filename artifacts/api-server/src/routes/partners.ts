@@ -195,9 +195,15 @@ router.put("/admin/partner-support/:id",gate,writeLimiter,requireAdmin,async (re
 router.get("/partner/stock", gate, readLimiter, async (req, res) => {
   try {
     if (!await approved(req,res)) return;
+    const delivery = await db.from("inventory").select("assigned_at")
+      .ilike("service","netflix").eq("is_used",true)
+      .not("assigned_order_id","is",null).not("assigned_at","is",null)
+      .order("assigned_at",{ascending:false}).limit(1).maybeSingle();
+    if (delivery.error) return notAvailable(res);
     const { data, error } = await db.rpc("partner_netflix_stock");
     if (error) return notAvailable(res);
-    return res.json({ ...data, checked_at: new Date().toISOString() });
+    return res.json({ profiles:data.profiles,accounts:data.accounts,last_delivery_at:delivery.data?.assigned_at ?? null,
+      checked_at: new Date().toISOString() });
   } catch { return notAvailable(res); }
 });
 

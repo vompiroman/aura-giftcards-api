@@ -18,7 +18,8 @@ const customer="0422d228-1727-4f44-99ef-e6e1da59b912";
 const tx="f13e03cf-be01-4bc6-a302-07a1be983e22";
 const valid={monthly_volume:"UNDER_5000",sales_channel:"WEB",profile:"INDEPENDENT",products:"Netflix",quick_contact:"@seller"};
 const chain=(result:unknown)=>{
-  const builder:any={select:()=>builder,eq:vi.fn(()=>builder),maybeSingle:async()=>result};
+  const builder:any={select:()=>builder,eq:vi.fn(()=>builder),ilike:vi.fn(()=>builder),not:vi.fn(()=>builder),
+    order:vi.fn(()=>builder),limit:vi.fn(()=>builder),maybeSingle:async()=>result};
   return builder;
 };
 describe("partner boundaries",()=>{
@@ -61,9 +62,13 @@ describe("partner boundaries",()=>{
     await request(app).get("/partner/stock").set("Authorization","Bearer test").expect(403);
     expect(mocks.rpc).not.toHaveBeenCalled();
     mocks.from.mockReturnValueOnce(chain({data:{partner_status:"APPROVED"},error:null}));
+    const delivery=chain({data:{assigned_at:"2026-11-15T18:00:00.123456+00:00"},error:null});
+    mocks.from.mockReturnValueOnce(delivery);
     mocks.rpc.mockResolvedValueOnce({data:{profiles:5,accounts:2},error:null});
     const response=await request(app).get("/partner/stock").set("Authorization","Bearer test").expect(200);
-    expect(response.body).toEqual({profiles:5,accounts:2,checked_at:expect.any(String)});
+    expect(response.body).toEqual({profiles:5,accounts:2,last_delivery_at:"2026-11-15T18:00:00.123456+00:00",checked_at:expect.any(String)});
+    expect(delivery.ilike).toHaveBeenCalledWith("service","netflix");
+    expect(delivery.not).toHaveBeenCalledWith("assigned_order_id","is",null);
     expect(response.headers["cache-control"]).toContain("no-store");
   });
   it("queries only the signed-in partner's orders and omits credential fields",async()=>{
