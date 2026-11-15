@@ -18,6 +18,7 @@ try {
   await db.exec(await file("../supabase/migrations/20260824101500_atomic_slickpay_observations.sql"));
   await db.exec(await file("../supabase/migrations/20261114193941_partner_program.sql"));
   await db.exec(await file("../supabase/migrations/20261115154539_partner_operations.sql"));
+  await db.exec(await file("../supabase/migrations/20261115162323_partner_toolkit.sql"));
   await q("insert into auth.users values($1),($2),($3)",[u,admin,other]);
   for (const role of ["anon","authenticated"]) {
     assert.equal(await scalar("select has_table_privilege($1,'public.wallet_transactions','select')",[role]),false);
@@ -123,6 +124,30 @@ try {
   const claim = () => q("select * from public.claim_partner_reminders(8)");
   assert.equal((await claim())[0].days_before,7);
   assert.equal((await claim()).length,0);
+  assert.deepEqual(await scalar("select public.partner_toolkit($1)",[u]),{subscribed:false,onboarding_complete:true});
+  assert.deepEqual(await scalar("select public.partner_toolkit($1)",[other]),{subscribed:false,onboarding_complete:false});
+  assert.equal(await scalar("select public.save_partner_resale($1,$2,5678.90)",[other,card.order_id]),false);
+  assert.equal(await scalar("select public.save_partner_resale($1,$2,5678.90)",[u,card.order_id]),true);
+  assert.deepEqual(await scalar("select public.partner_order_margin($1,$2)",[u,card.order_id]),
+    {cost:4500,resale_price:5678.9,gross_margin:1178.9});
+  assert.equal(await scalar("select public.partner_order_margin($1,$2)",[other,card.order_id]),null);
+  assert.equal((await q(page,[u]))[0].partner_client_reference,"Client A");
+  assert.equal(await scalar("select public.open_partner_ticket($1,$2,'Un problème de livraison')",[other,card.order_id]),null);
+  assert.ok(await scalar("select public.open_partner_ticket($1,$2,'Un problème de livraison')",[u,card.order_id]));
+  await assert.rejects(()=>q("select public.open_partner_ticket($1,$2,'Une seconde demande')",[u,card.order_id]),/partner_ticket_open_per_order/);
+  assert.equal(await scalar("select public.subscribe_partner_stock($1,'fr')",[u]),false);
+  await db.exec("reset role");
+  await db.exec("update public.inventory set is_used=true where lower(service)='netflix'");
+  await db.exec("set role service_role");
+  assert.equal(await scalar("select public.subscribe_partner_stock($1,'fr')",[u]),true);
+  assert.equal((await q("select * from public.claim_partner_stock_alerts(8)")).length,0);
+  await db.exec("reset role");
+  await db.exec("update public.inventory set is_used=false where account_email='two@example.invalid'");
+  await db.exec("set role service_role");
+  assert.equal((await q("select * from public.claim_partner_stock_alerts(8)"))[0].user_id,u);
+  assert.equal((await q("select * from public.claim_partner_stock_alerts(8)")).length,0);
+  assert.equal(await scalar("select has_table_privilege('authenticated','public.partner_support_tickets','select')"),false);
+  assert.equal(await scalar("select has_table_privilege('authenticated','public.partner_stock_alerts','select')"),false);
   await q("update public.orders set expires_at=now()+interval '1 day' where order_id=$1",[card.order_id]);
   assert.equal((await claim())[0].days_before,2);
   assert.equal((await claim()).length,0);

@@ -10,6 +10,7 @@ import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 import { runPaymentReconciliation } from "../jobs/paymentReconciliation";
 import { runPurchaseEmailDelivery } from "../jobs/purchaseEmailDelivery";
 import { runPartnerReminders } from "../jobs/partnerReminders";
+import { runPartnerStockAlerts } from "../jobs/partnerStockAlerts";
 import { observeSlickPayPayment } from "../lib/slickpayObservation";
 
 const router = Router();
@@ -578,7 +579,8 @@ router.post("/cron/partner-renewals", async (req, res) => {
   if (!process.env.CRON_SECRET) return res.status(503).json({ error: "CRON_SECRET non configuré." });
   if (!validCronSecret(req.get("x-cron-secret"))) return res.status(401).json({ error: "Non autorisé" });
   try {
-    return res.json(await runPartnerReminders());
+    const [renewal,stock]=await Promise.all([runPartnerReminders(),runPartnerStockAlerts()]);
+    return res.json({sent:renewal.sent+stock.sent,errors:renewal.errors+stock.errors,renewal,stock});
   } catch {
     return res.status(503).json({ error: "Rappels partenaire indisponibles." });
   }

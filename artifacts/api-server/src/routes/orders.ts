@@ -8,6 +8,7 @@ import { computeCart } from "../config/prices";
 import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
 import { deliverPendingActivationNotifications } from "../jobs/activationNotificationDelivery";
 import { fulfillPaidOrdersWaitingForStock } from "../jobs/stockFulfillment";
+import { runPartnerStockAlerts } from "../jobs/partnerStockAlerts";
 import { isAdmin, requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
 import {
   adminOrderItems,
@@ -1471,6 +1472,7 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
         req.log?.warn({ errorName: (reconciliationError as Error)?.name }, "Post-insert stock reconciliation failed");
       }
     }
+    res.once("finish",()=>{void runPartnerStockAlerts().catch(()=>req.log?.warn("Partner stock alerts failed"));});
     return res.status(201).json({
       success: true,
       added: cleanRows.length,
@@ -1701,6 +1703,7 @@ router.post("/admin/inventory/:id/release", requireAdmin, async (req: AuthedRequ
       targetId: inventoryId,
       details: { previous_order_id: item.assigned_order_id },
     });
+    res.once("finish",()=>{void runPartnerStockAlerts().catch(()=>req.log?.warn("Partner stock alerts failed"));});
     return res.json({ success: true, stock_reconciliation: stockReconciliation });
   } catch (err: any) {
     req.log?.error({ code: err?.code }, "Admin inventory release failed");
