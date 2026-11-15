@@ -41,9 +41,9 @@ $$;
 create function public.partner_order_page(p_user uuid,p_service text,p_status text,p_offset integer)
 returns table (order_id text, status text, payment_status text, items jsonb, amount numeric,
   created_at timestamptz, expires_at timestamptz, partner_client_reference text, partner_reminders boolean)
-language sql stable security invoker set search_path = ''
+language sql stable security invoker set search_path = '' set timezone = 'UTC'
 as $$
-  select o.order_id, o.status, o.payment_status, o.items, o.amount, o.created_at, o.expires_at,
+  select o.order_id, o.status, o.payment_status, o.items, o.amount, o.created_at::timestamptz, o.expires_at::timestamptz,
     settings.client_reference, coalesce(settings.reminders,false)
   from public.orders o
   left join public.partner_order_settings settings on settings.order_id=o.order_id
@@ -81,13 +81,13 @@ as $$
 $$;
 
 create function public.partner_monthly_summary(p_user uuid,p_from timestamptz,p_to timestamptz)
-returns jsonb language sql stable security invoker set search_path = ''
+returns jsonb language sql stable security invoker set search_path = '' set timezone = 'UTC'
 as $$
   with orders as (
     select count(*) as purchases, coalesce(sum(amount),0) as spent, coalesce(sum(discount_amount),0) as savings
     from public.orders where partner_user_id = p_user and payment_status = 'paid'
-      and coalesce(payment_confirmed_at, created_at) >= p_from
-      and coalesce(payment_confirmed_at, created_at) < p_to
+      and ((payment_confirmed_at >= p_from and payment_confirmed_at < p_to)
+        or (payment_confirmed_at is null and created_at >= p_from and created_at < p_to))
   ), wallet as (
     select coalesce(sum(amount) filter (where kind='DEPOSIT'),0) as deposits,
       coalesce(sum(amount) filter (where kind='PURCHASE'),0) as wallet_purchases,
@@ -98,7 +98,7 @@ as $$
   select to_jsonb(orders) || to_jsonb(wallet) from orders cross join wallet;
 $$;
 
-create index partner_paid_activity on public.orders(partner_user_id, (coalesce(payment_confirmed_at,created_at)), order_id)
+create index partner_paid_activity on public.orders(partner_user_id, payment_confirmed_at, order_id)
   where partner_user_id is not null and payment_status='paid';
 create index partner_wallet_confirmed on public.wallet_transactions(user_id, confirmed_at, id)
   where status='CONFIRMED';
@@ -106,15 +106,16 @@ create index partner_wallet_confirmed on public.wallet_transactions(user_id, con
 create function public.partner_monthly_entries(p_user uuid,p_from timestamptz,p_to timestamptz,p_offset integer)
 returns table(entry_id text, occurred_at timestamptz, kind text, order_id text, amount numeric,
   discount numeric, balance_after numeric, client_reference text)
-language sql stable security invoker set search_path = ''
+language sql stable security invoker set search_path = '' set timezone = 'UTC'
 as $$
   select * from (
-    select 'order:' || o.order_id as entry_id, coalesce(o.payment_confirmed_at,o.created_at) as occurred_at,
+    select 'order:' || o.order_id as entry_id, coalesce(o.payment_confirmed_at,o.created_at::timestamptz) as occurred_at,
       'ORDER'::text as kind,o.order_id,o.amount,o.discount_amount as discount, null::numeric as balance_after,
       settings.client_reference
     from public.orders o left join public.partner_order_settings settings on settings.order_id=o.order_id
     where o.partner_user_id=p_user and o.payment_status='paid'
-      and coalesce(o.payment_confirmed_at,o.created_at) >= p_from and coalesce(o.payment_confirmed_at,o.created_at) < p_to
+      and ((o.payment_confirmed_at >= p_from and o.payment_confirmed_at < p_to)
+        or (o.payment_confirmed_at is null and o.created_at >= p_from and o.created_at < p_to))
     union all
     select w.id::text,w.confirmed_at,w.kind,w.order_id,w.amount,null,w.balance_after,null
     from public.wallet_transactions w where w.user_id=p_user and w.status='CONFIRMED'
@@ -125,10 +126,10 @@ $$;
 create function public.claim_partner_reminders(p_limit integer)
 returns table (order_id text, expires_at timestamptz, days_before integer, claim_id uuid,
   email text, language text)
-language sql security invoker set search_path = ''
+language sql security invoker set search_path = '' set timezone = 'UTC'
 as $$
   with due as (
-    select o.order_id, o.expires_at, o.assigned_email, s.language,
+    select o.order_id, o.expires_at::timestamptz as expires_at, o.assigned_email, s.language,
       case when o.expires_at <= now() + interval '2 days' then 2 else 7 end as days_before
     from public.orders o
     join public.partner_accounts a on a.user_id = o.partner_user_id and a.partner_status='APPROVED'

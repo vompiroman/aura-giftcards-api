@@ -10,7 +10,8 @@ create table public.orders (
  slickpay_invoice_id text unique, payment_last_checked_at timestamptz, payment_provider_status text,
  payment_provider_amount numeric, payment_check_count integer not null default 0,
  payment_confirmed_at timestamptz, payment_confirmation_source text,
- created_at timestamptz not null default now(), expires_at timestamptz
+ created_at timestamp without time zone not null default (now() at time zone 'UTC'),
+ expires_at timestamp without time zone
 );
 create table public.inventory(id uuid primary key default gen_random_uuid(), assigned_order_id text, is_used boolean,
   service text, account_email text);
