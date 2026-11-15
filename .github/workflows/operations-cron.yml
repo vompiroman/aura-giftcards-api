@@ -49,6 +49,18 @@ jobs:
             exit 1
           fi
 
+      - name: Send opted-in partner renewal reminders
+        if: ${{ steps.configuration.outcome == 'success' && !cancelled() }}
+        shell: bash
+        run: |
+          response="$(curl --fail-with-body --silent --show-error \
+            --retry 2 --retry-all-errors --retry-delay 10 \
+            --connect-timeout 20 --max-time 90 \
+            --request POST \
+            --header "x-cron-secret: ${CRON_SECRET}" \
+            "${API_ORIGIN%/}/api/cron/partner-renewals")"
+          echo "$response" | jq -e '.errors == 0'
+
       - name: Deliver queued purchase emails
         if: ${{ !cancelled() && steps.configuration.outcome == 'success' }}
         shell: bash

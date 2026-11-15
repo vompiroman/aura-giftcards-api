@@ -323,3 +323,28 @@ export async function sendPurchaseConfirmationEmail(
     }],
   });
 }
+
+export async function sendPartnerRenewalReminder(
+  reminder: { email: string; order_id: string; expires_at: string; days_before: number; language: string },
+  config: PurchaseEmailConfig,
+) {
+  const language = reminder.language === "ar" ? "ar" : reminder.language === "en" ? "en" : "fr";
+  const copy = {
+    fr: ["Abonnement à renouveler", "Commande", "Ton abonnement expire le", "Ouvrir l’espace partenaire"],
+    en: ["Subscription renewal reminder", "Order", "Your subscription expires on", "Open the partner dashboard"],
+    ar: ["تذكير بتجديد الاشتراك", "الطلب", "ينتهي اشتراكك في", "افتح لوحة الشريك"],
+  }[language];
+  const [subject, order, expiry, action] = copy;
+  const date = new Intl.DateTimeFormat(language, { dateStyle: "long", timeZone: "Africa/Algiers" })
+    .format(new Date(reminder.expires_at));
+  const url = "https://www.aura-stream.com/#partner";
+  const text = `${order} ${reminder.order_id}\n${expiry} ${date}.\n${action} : ${url}`;
+  const key = crypto.createHash("sha256")
+    .update(`${reminder.order_id}:${reminder.expires_at}:${reminder.days_before}`).digest("hex");
+  return sendTransactionalMessage(config, {
+    to: reminder.email, subject, text, tag: "partner-renewal", idempotencyKey: `partner-renewal-${key}`,
+    html: `<html lang="${language}" dir="${language === "ar" ? "rtl" : "ltr"}"><body>
+      <h1>${subject}</h1><p>${order} <bdi>${escapeHtml(reminder.order_id)}</bdi></p>
+      <p>${expiry} ${escapeHtml(date)}.</p><p><a href="${url}">${action}</a></p></body></html>`,
+  });
+}

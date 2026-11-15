@@ -9,6 +9,7 @@ import { fetchSlickPayInvoice, slickPayInvoiceUrl } from "../lib/slickpay";
 import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 import { runPaymentReconciliation } from "../jobs/paymentReconciliation";
 import { runPurchaseEmailDelivery } from "../jobs/purchaseEmailDelivery";
+import { runPartnerReminders } from "../jobs/partnerReminders";
 import { observeSlickPayPayment } from "../lib/slickpayObservation";
 
 const router = Router();
@@ -570,6 +571,16 @@ router.post("/cron/deliver-emails", async (req, res): Promise<any> => {
     return res.json(await runPurchaseEmailDelivery(req.log));
   } catch {
     return res.status(503).json({ error: "Livraison des e-mails indisponible." });
+  }
+});
+
+router.post("/cron/partner-renewals", async (req, res) => {
+  if (!process.env.CRON_SECRET) return res.status(503).json({ error: "CRON_SECRET non configuré." });
+  if (!validCronSecret(req.get("x-cron-secret"))) return res.status(401).json({ error: "Non autorisé" });
+  try {
+    return res.json(await runPartnerReminders());
+  } catch {
+    return res.status(503).json({ error: "Rappels partenaire indisponibles." });
   }
 });
 

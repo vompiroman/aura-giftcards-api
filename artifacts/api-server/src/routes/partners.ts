@@ -6,6 +6,9 @@ import { requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
 import { appendAuditLog } from "../lib/auditLog";
 import { isTemporaryAuthError } from "../lib/authAvailability";
 import { createDeposit, observeDeposit } from "../lib/partnerPayments";
+import { computeCart, PRICES } from "../config/prices";
+import { buildInvoicePdf } from "../lib/invoicePdf";
+import { csvCell } from "../lib/adminOrderExport";
 import { AUTO_APPROVE_PARTNERS, MAX_WALLET_DEPOSIT, MIN_UNLOCK_DEPOSIT, PARTNER_ENABLED, PARTNER_SCHEMA_READY, uuidPattern } from "../config/partnerTiers";
 
 const uuid = z.string().regex(uuidPattern);
@@ -49,6 +52,167 @@ function page(value:unknown) {
   const n=typeof value==="string" && /^\d{1,6}$/.test(value) ? Number(value) : 0;
   return Math.min(n,100_000);
 }
+
+async function approved(req: Request, res: Response) {
+  res.set("Cache-Control", "private, no-store");
+  const actor = await user(req, res);
+  if (!actor) return null;
+  const { data, error } = await db.from("partner_accounts").select("partner_status")
+    .eq("user_id", actor.id).maybeSingle();
+  if (error) {
+    notAvailable(res);
+    return null;
+  }
+  if (data?.partner_status !== "APPROVED") {
+    res.status(403).json({ error: "Candidature partenaire non approuvée." });
+    return null;
+  }
+  return actor;
+}
+
+const serviceFilter = z.enum(["netflix", "spotify", "crunchyroll", "snapchat"]);
+const orderFilter = z.enum(["pending", "unpaid", "active", "expiring", "expired", "cancelled"]);
+const preferences = z.object({
+  client_reference: z.string().trim().max(80),
+  reminders: z.boolean(),
+  language: z.enum(["fr", "en", "ar"]),
+});
+const orderNumber = /^[A-Za-z0-9_-]{1,72}$/;
+
+router.get("/partner/stock", gate, readLimiter, async (req, res) => {
+  try {
+    if (!await approved(req,res)) return;
+    const { data, error } = await db.rpc("partner_netflix_stock");
+    if (error) return notAvailable(res);
+    return res.json({ ...data, checked_at: new Date().toISOString() });
+  } catch { return notAvailable(res); }
+});
+
+router.get("/partner/basket", gate, readLimiter, async (req, res) => {
+  try {
+    const actor = await approved(req,res);
+    if (!actor) return;
+    const { data, error } = await db.from("partner_accounts").select("saved_basket")
+      .eq("user_id", actor.id).single();
+    if (error) return notAvailable(res);
+    return res.json({ catalog: PRICES, items: data.saved_basket });
+  } catch { return notAvailable(res); }
+});
+
+router.put("/partner/basket", gate, writeLimiter, async (req, res) => {
+  try {
+    const actor = await approved(req,res);
+    if (!actor) return;
+    const raw = req.body?.items;
+    const result = computeCart(raw);
+    const empty = Array.isArray(raw) && raw.length === 0;
+    const totalQuantity = result.cleanItems.reduce((sum,item) => sum + item.quantity, 0);
+    if (!empty && (!result.ok || totalQuantity > 20)) return res.status(400).json({ error: "Panier invalide." });
+    const items = empty ? [] : result.cleanItems;
+    const { error } = await db.from("partner_accounts").update({ saved_basket: items }).eq("user_id", actor.id);
+    if (error) return notAvailable(res);
+    return res.json({ items });
+  } catch { return notAvailable(res); }
+});
+
+router.get("/partner/orders", gate, readLimiter, async (req, res) => {
+  try {
+    const actor = await approved(req,res);
+    if (!actor) return;
+    const service = serviceFilter.safeParse(req.query.service);
+    const status = orderFilter.safeParse(req.query.status);
+    const { data, error } = await db.rpc("partner_order_page", {
+      p_user: actor.id, p_service: service.data ?? null, p_status: status.data ?? null, p_offset: page(req.query.offset),
+    });
+    if (error) return notAvailable(res);
+    const orders = data || [];
+    return res.json({
+      orders: orders.slice(0,20).map((order: { items: unknown }) => ({
+        ...order,
+        items: Array.isArray(order.items) ? order.items.map(item => ({
+          name: String(item?.name || item?.service || ""), quantity: Number(item?.quantity || 1),
+        })) : [],
+      })),
+      has_more: orders.length > 20,
+    });
+  } catch { return notAvailable(res); }
+});
+
+router.put("/partner/orders/:id/preferences", gate, writeLimiter, async (req, res) => {
+  try {
+    const actor = await approved(req,res);
+    if (!actor) return;
+    const parsed = preferences.safeParse(req.body);
+    if (!orderNumber.test(String(req.params.id))) return res.sendStatus(404);
+    if (!parsed.success) return res.status(400).json({ error: "Vérifie les informations de la commande." });
+    const { data, error } = await db.rpc("save_partner_order_settings", {
+      p_user: actor.id, p_order: req.params.id, p_reference: parsed.data.client_reference || null,
+      p_reminders: parsed.data.reminders, p_language: parsed.data.language,
+    });
+    if (error) return notAvailable(res);
+    if (!data) return res.sendStatus(404);
+    return res.json({ saved: true });
+  } catch { return notAvailable(res); }
+});
+
+router.get("/partner/orders/:id/invoice.pdf", gate, readLimiter, async (req, res) => {
+  try {
+    const actor = await approved(req,res);
+    if (!actor) return;
+    if (!orderNumber.test(String(req.params.id))) return res.sendStatus(404);
+    const { data, error } = await db.from("orders")
+      .select("order_id,assigned_email,amount,subtotal_amount,discount_amount,items,created_at,payment_confirmed_at")
+      .eq("partner_user_id", actor.id).eq("order_id", req.params.id).eq("payment_status", "paid").maybeSingle();
+    if (error) return notAvailable(res);
+    if (!data) return res.sendStatus(404);
+    return res.attachment(`aura-${data.order_id}.pdf`).type("application/pdf").send(buildInvoicePdf({
+      job_order_id: data.order_id, customer_email: data.assigned_email || actor.email,
+      total_amount: data.amount, subtotal_amount: data.subtotal_amount, discount_amount: data.discount_amount,
+      order_items: data.items, ordered_at: data.created_at, paid_at: data.payment_confirmed_at || data.created_at,
+    }));
+  } catch { return notAvailable(res); }
+});
+
+function monthRange(value: unknown) {
+  if (typeof value !== "string" || !/^20\d{2}-(0[1-9]|1[0-2])$/.test(value)) return null;
+  const [year, month] = value.split("-").map(Number);
+  // Algeria uses UTC+01:00 year-round.
+  return { p_from: new Date(Date.UTC(year,month - 1,1,-1)).toISOString(),
+    p_to: new Date(Date.UTC(year,month,1,-1)).toISOString() };
+}
+
+router.get("/partner/monthly", gate, readLimiter, async (req, res) => {
+  try {
+    const actor = await approved(req,res);
+    if (!actor) return;
+    const range = monthRange(req.query.month);
+    if (!range) return res.status(400).json({ error: "Mois invalide." });
+    const { data, error } = await db.rpc("partner_monthly_summary", { p_user: actor.id, ...range });
+    if (error) return notAvailable(res);
+    return res.json(data);
+  } catch { return notAvailable(res); }
+});
+
+router.get("/partner/monthly.csv", gate, readLimiter, async (req, res) => {
+  try {
+    const actor = await approved(req,res);
+    if (!actor) return;
+    const range = monthRange(req.query.month);
+    if (!range) return res.status(400).json({ error: "Mois invalide." });
+    const rows: unknown[][] = [["Date (UTC)","Type","Commande","Montant (DZD)","Remise (DZD)","Solde (DZD)","Référence client"]];
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await db.rpc("partner_monthly_entries", {
+        p_user: actor.id, ...range, p_offset: offset,
+      });
+      if (error) return notAvailable(res);
+      for (const row of data || []) rows.push([row.occurred_at,row.kind,row.order_id,row.amount,row.discount,row.balance_after,row.client_reference]);
+      if (!data || data.length < 500) break;
+      if (offset >= 10_000) return res.status(413).json({ error: "Ce bilan contient trop de lignes pour être exporté." });
+    }
+    return res.attachment(`aura-partenaire-${req.query.month}.csv`).type("text/csv")
+      .send("\uFEFF" + rows.map(row => row.map(csvCell).join(";")).join("\r\n"));
+  } catch { return notAvailable(res); }
+});
 
 router.get("/partner",gate,readLimiter,async (req,res)=>{
   try {

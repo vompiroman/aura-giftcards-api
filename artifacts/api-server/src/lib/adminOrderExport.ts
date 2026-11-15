@@ -1,6 +1,6 @@
 const CSV_FORMULA_PREFIX = /^[\s]*[=+\-@]/;
 
-function csvCell(value: unknown): string {
+export function csvCell(value: unknown): string {
   let text = value === null || value === undefined ? "" : String(value);
   text = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ");
   if (CSV_FORMULA_PREFIX.test(text)) text = `'${text}`;

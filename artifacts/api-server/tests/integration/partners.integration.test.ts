@@ -55,6 +55,48 @@ describe("partner boundaries",()=>{
     expect(select.eq).toHaveBeenCalledWith("user_id",customer);
     expect(mocks.getInvoice).not.toHaveBeenCalled();
   });
+  it("returns only current Netflix stock to approved partners",async()=>{
+    await request(app).get("/partner/stock").expect(401);
+    mocks.from.mockReturnValueOnce(chain({data:{partner_status:"PENDING"},error:null}));
+    await request(app).get("/partner/stock").set("Authorization","Bearer test").expect(403);
+    expect(mocks.rpc).not.toHaveBeenCalled();
+    mocks.from.mockReturnValueOnce(chain({data:{partner_status:"APPROVED"},error:null}));
+    mocks.rpc.mockResolvedValueOnce({data:{profiles:5,accounts:2},error:null});
+    const response=await request(app).get("/partner/stock").set("Authorization","Bearer test").expect(200);
+    expect(response.body).toEqual({profiles:5,accounts:2,checked_at:expect.any(String)});
+    expect(response.headers["cache-control"]).toContain("no-store");
+  });
+  it("queries only the signed-in partner's orders and omits credential fields",async()=>{
+    mocks.from.mockReturnValue(chain({data:{partner_status:"APPROVED"},error:null}));
+    mocks.rpc.mockResolvedValue({data:[{order_id:"ORD-own",items:[{name:"Netflix Premium 1 mois",quantity:1,pin:"fake"}]}],error:null});
+    const response=await request(app).get(`/partner/orders?service=netflix&status=expiring&user_id=${tx}`)
+      .set("Authorization","Bearer test").expect(200);
+    expect(mocks.rpc).toHaveBeenCalledWith("partner_order_page",{p_user:customer,p_service:"netflix",p_status:"expiring",p_offset:0});
+    expect(response.body.orders[0].items).toEqual([{name:"Netflix Premium 1 mois",quantity:1}]);
+    mocks.rpc.mockResolvedValue({data:false,error:null});
+    await request(app).put("/partner/orders/ORD-other/preferences").set("Authorization","Bearer test")
+      .send({client_reference:"Ref", reminders:true, language:"fr", user_id:tx}).expect(404);
+    expect(mocks.rpc).toHaveBeenLastCalledWith("save_partner_order_settings",{
+      p_user:customer,p_order:"ORD-other",p_reference:"Ref",p_reminders:true,p_language:"fr",
+    });
+  });
+  it("checks ownership and paid status for a downloadable invoice",async()=>{
+    const orders=chain({data:null,error:null});
+    mocks.from.mockReturnValueOnce(chain({data:{partner_status:"APPROVED"},error:null})).mockReturnValueOnce(orders);
+    await request(app).get("/partner/orders/ORD-other/invoice.pdf").set("Authorization","Bearer test").expect(404);
+    expect(orders.eq).toHaveBeenCalledWith("partner_user_id",customer);
+    expect(orders.eq).toHaveBeenCalledWith("payment_status","paid");
+  });
+  it("uses the Algeria calendar and neutralizes spreadsheet formulas in the export",async()=>{
+    mocks.from.mockReturnValue(chain({data:{partner_status:"APPROVED"},error:null}));
+    mocks.rpc.mockResolvedValue({data:[{order_id:"ORD-own",amount:600,client_reference:"=1+2"}],error:null});
+    const response=await request(app).get("/partner/monthly.csv?month=2026-11")
+      .set("Authorization","Bearer test").expect(200);
+    expect(mocks.rpc).toHaveBeenCalledWith("partner_monthly_entries",{
+      p_user:customer,p_from:"2026-10-31T23:00:00.000Z",p_to:"2026-11-30T23:00:00.000Z",p_offset:0,
+    });
+    expect(response.text).toContain(`"'=1+2"`);
+  });
   it("never trusts webhook money or payment status; existing deposits work during suspension",async()=>{
     vi.stubEnv("PARTNER_PROGRAM_ENABLED","false");
     mocks.from.mockReturnValue(chain({data:{id:tx,status:"PENDING",provider_invoice_id:"invoice-1"},error:null}));
