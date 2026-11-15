@@ -76,6 +76,10 @@ function validPassword(value: unknown): value is string {
   return typeof value === "string" && value.length >= 12 && value.length <= 128;
 }
 
+function validRecoveryHash(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{20,512}$/.test(value);
+}
+
 function isRecentRecoveryToken(token: string): boolean {
   try {
     const [, encodedPayload] = token.split(".");
@@ -378,17 +382,14 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
       return;
     }
     
-    const origin = (process.env.FRONTEND_URL || "https://www.aura-stream.com").replace(/\/$/, "");
-    
     const { data, error } = await supabaseAdmin.auth.admin.generateLink({
       type: "recovery",
       email: normalizedEmail,
-      options: { redirectTo: `${origin}/?type=recovery` },
     });
 
-    const actionLink = data?.properties?.action_link;
+    const tokenHash = data?.properties?.hashed_token;
     const emailConfig = getPurchaseEmailConfig();
-    if (error || !actionLink) {
+    if (error || !validRecoveryHash(tokenHash)) {
       req.log.warn({ code: error?.code || "RECOVERY_LINK_MISSING" }, "Supabase recovery link generation rejected");
       res.json({ message: "Si cet email existe, un lien de réinitialisation a été envoyé." });
       return;
@@ -401,7 +402,13 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
     }
 
     try {
-      await sendPasswordRecoveryEmail(normalizedEmail, actionLink, emailConfig);
+      const frontendUrl = process.env.FRONTEND_URL || "";
+      const configured = URL.canParse(frontendUrl) ? new URL(frontendUrl) : null;
+      const origin = configured?.protocol === "https:" && configured.hostname !== "localhost"
+        ? configured.origin : "https://www.aura-stream.com";
+      const link = new URL("/", origin);
+      link.hash = new URLSearchParams({ type: "recovery", token_hash: tokenHash }).toString();
+      await sendPasswordRecoveryEmail(normalizedEmail, link.href, emailConfig);
     } catch (emailError) {
       const code = typeof (emailError as { code?: unknown })?.code === "string"
         ? String((emailError as { code: string }).code).slice(0, 100)
@@ -418,29 +425,42 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
 
 router.post("/reset-password", recoveryLimiter, async (req, res) => {
   try {
-    const { token, password } = req.body;
-    if (
-      typeof token !== "string"
-      || token.length < 20
-      || token.length > 4096
-      || /[\r\n]/.test(token)
-      || !validPassword(password)
-    ) {
+    const { token: legacyToken, token_hash: tokenHash, password } = req.body;
+    const usingHash = tokenHash !== undefined;
+    const validToken = usingHash ? validRecoveryHash(tokenHash) && legacyToken === undefined
+      : typeof legacyToken === "string" && legacyToken.length >= 20 && legacyToken.length <= 4096
+        && !/[\r\n]/.test(legacyToken);
+    if (!validToken || !validPassword(password)) {
       res.status(400).json({ error: "Token et mot de passe requis." });
       return;
     }
 
-    const { data: recoveryUser, error: recoveryUserError } = await supabase.auth.getUser(token);
-    if (recoveryUserError || !recoveryUser?.user || !isRecentRecoveryToken(token)) {
-      res.status(400).json({ error: "Lien de réinitialisation invalide ou expiré." });
-      return;
-    }
-    
     const supabaseUrl = process.env["SUPABASE_URL"];
     const supabaseKey = authApiKey();
     if (!supabaseUrl || !supabaseKey) {
       res.status(503).json({ error: "Service d'authentification indisponible." });
       return;
+    }
+
+    let token: string;
+    let userId: string;
+    if (usingHash) {
+      // A mail scanner may open the link. Consume it only when the form is submitted.
+      const { data, error } = await createAuthClient().auth.verifyOtp({ type: "recovery", token_hash: tokenHash });
+      if (error || !data.session?.access_token || !data.user?.id) {
+        res.status(400).json({ error: "Lien de réinitialisation invalide ou expiré." });
+        return;
+      }
+      token = data.session.access_token;
+      userId = data.user.id;
+    } else {
+      token = legacyToken;
+      const { data, error } = await supabase.auth.getUser(token);
+      if (error || !data.user?.id || !isRecentRecoveryToken(token)) {
+        res.status(400).json({ error: "Lien de réinitialisation invalide ou expiré." });
+        return;
+      }
+      userId = data.user.id;
     }
     
     const response = await axios.put(`${supabaseUrl}/auth/v1/user`, { password }, {
@@ -456,7 +476,7 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
       req.log.warn({ code: revokeError.code }, "Supabase session revocation failed after password reset");
     }
 
-    await webSessions().revokeUser(recoveryUser.user.id);
+    await webSessions().revokeUser(userId);
     res.json({ message: "Mot de passe réinitialisé avec succès." });
   } catch (err: any) {
     req.log.warn({ message: err instanceof Error ? err.message : "unknown" }, "Reset-password request failed");

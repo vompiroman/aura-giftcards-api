@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { generateLinkMock, sendRecoveryEmailMock, signUpMock, signInMock, getUserMock, refreshSessionMock, adminSignOutMock, axiosPutMock, partnerFrom, partnerRpc } = vi.hoisted(() => ({
+const { generateLinkMock, sendRecoveryEmailMock, signUpMock, signInMock, getUserMock, verifyOtpMock, refreshSessionMock, adminSignOutMock, axiosPutMock, partnerFrom, partnerRpc } = vi.hoisted(() => ({
   generateLinkMock: vi.fn(),
   sendRecoveryEmailMock: vi.fn(),
   signUpMock: vi.fn(),
   signInMock: vi.fn(),
   getUserMock: vi.fn(),
+  verifyOtpMock: vi.fn(),
   refreshSessionMock: vi.fn(),
   adminSignOutMock: vi.fn(),
   axiosPutMock: vi.fn(),
@@ -33,7 +34,7 @@ vi.mock("axios", () => ({
 }));
 
 vi.mock("../../src/lib/supabase", () => ({
-  createAuthClient: () => ({ auth: { refreshSession: refreshSessionMock } }),
+  createAuthClient: () => ({ auth: { refreshSession: refreshSessionMock, verifyOtp: verifyOtpMock } }),
   supabase: { auth: { getUser: getUserMock } },
   supabaseAdmin: { from:partnerFrom,rpc:partnerRpc,auth: { getUser: getUserMock, admin: { signOut: adminSignOutMock, generateLink: generateLinkMock } } },
   supabaseAuth: {
@@ -82,9 +83,11 @@ describe("sécurité de l'authentification", () => {
   });
 
   it("ne permet pas d'énumérer les comptes via mot de passe oublié", async () => {
+    const tokenHash = "a".repeat(56);
+    vi.stubEnv("FRONTEND_URL", "http://localhost:3000");
     generateLinkMock
       .mockResolvedValueOnce({
-        data: { properties: { action_link: "https://test-project.supabase.co/auth/v1/verify?token=one&type=recovery" } },
+        data: { properties: { hashed_token: tokenHash, redirect_to: "http://localhost:3000" } },
         error: null,
       })
       .mockResolvedValueOnce({ data: null, error: { code: "user_not_found", message: "Unknown user" } });
@@ -103,7 +106,7 @@ describe("sécurité de l'authentification", () => {
     expect(sendRecoveryEmailMock).toHaveBeenCalledTimes(1);
     expect(sendRecoveryEmailMock).toHaveBeenCalledWith(
       "client@example.com",
-      expect.stringContaining("type=recovery"),
+      `https://www.aura-stream.com/#type=recovery&token_hash=${tokenHash}`,
       expect.objectContaining({ fromEmail: "admin@aura-stream.com" }),
     );
   });
@@ -154,6 +157,25 @@ describe("sécurité de l'authentification", () => {
       { password: "mot-de-passe-fort-2026" },
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: `Bearer ${token}` }) }),
     );
+    expect(adminSignOutMock).toHaveBeenCalledWith(token, "global");
+  });
+
+  it("consomme le lien sur validation du formulaire et refuse sa réutilisation", async () => {
+    const tokenHash = "a".repeat(56);
+    const token = accessTokenWithAmr("recovery");
+    verifyOtpMock
+      .mockResolvedValueOnce({ data: { session: { access_token: token }, user: { id: "user-1" } }, error: null })
+      .mockResolvedValueOnce({ data: { session: null, user: null }, error: { code: "otp_expired" } });
+    axiosPutMock.mockResolvedValue({ data: { id: "user-1" } });
+    adminSignOutMock.mockResolvedValue({ error: null });
+    const payload = { token_hash: tokenHash, password: "mot-de-passe-fort-2026" };
+
+    const reset = () => request(app).post("/api/reset-password")
+      .set("X-Forwarded-For", "192.0.2.24").send(payload);
+    expect((await reset()).status).toBe(200);
+    expect((await reset()).status).toBe(400);
+    expect(verifyOtpMock).toHaveBeenCalledWith({ type: "recovery", token_hash: tokenHash });
+    expect(axiosPutMock).toHaveBeenCalledTimes(1);
     expect(adminSignOutMock).toHaveBeenCalledWith(token, "global");
   });
 
