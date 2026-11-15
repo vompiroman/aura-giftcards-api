@@ -97,6 +97,27 @@ describe("partner boundaries",()=>{
     });
     expect(response.text).toContain(`"'=1+2"`);
   });
+  it("subscribes only the approved actor, with the requested supported language",async()=>{
+    mocks.from.mockReturnValue(chain({data:{partner_status:"APPROVED"},error:null}));
+    mocks.rpc.mockResolvedValue({data:true,error:null});
+    const response=await request(app).put("/partner/stock/alert").set("Authorization","Bearer test")
+      .send({enabled:true,language:"ar",user_id:tx,email:"other@example.invalid"}).expect(200);
+    expect(response.body.subscribed).toBe(true);
+    expect(mocks.rpc).toHaveBeenCalledWith("subscribe_partner_stock",{p_user:customer,p_language:"ar"});
+  });
+  it("does not allow another order's margin or support request to be changed",async()=>{
+    mocks.from.mockReturnValue(chain({data:{partner_status:"APPROVED"},error:null}));
+    mocks.rpc.mockResolvedValue({data:null,error:null});
+    await request(app).put("/partner/orders/ORD-other/margin").set("Authorization","Bearer test")
+      .send({resale_price:1200.5,amount:1}).expect(404);
+    expect(mocks.rpc).toHaveBeenLastCalledWith("save_partner_resale",{p_user:customer,p_order:"ORD-other",p_resale:1200.5});
+    await request(app).post("/partner/orders/ORD-other/support").set("Authorization","Bearer test")
+      .send({message:"La commande est en attente."}).expect(404);
+    expect(mocks.rpc).toHaveBeenLastCalledWith("open_partner_ticket",{
+      p_user:customer,p_order:"ORD-other",p_message:"La commande est en attente.",
+    });
+    await request(app).get("/admin/partner-support").set("Authorization","Bearer test").expect(404);
+  });
   it("never trusts webhook money or payment status; existing deposits work during suspension",async()=>{
     vi.stubEnv("PARTNER_PROGRAM_ENABLED","false");
     mocks.from.mockReturnValue(chain({data:{id:tx,status:"PENDING",provider_invoice_id:"invoice-1"},error:null}));

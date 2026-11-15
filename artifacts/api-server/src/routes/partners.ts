@@ -78,6 +78,119 @@ const preferences = z.object({
   language: z.enum(["fr", "en", "ar"]),
 });
 const orderNumber = /^[A-Za-z0-9_-]{1,72}$/;
+const language = z.enum(["fr","en","ar"]);
+const ticketStatus = z.enum(["OPEN","IN_PROGRESS","RESOLVED"]);
+const resale = z.number().min(0).max(1_000_000_000)
+  .refine(n=>Number(n.toFixed(2))===n).nullable();
+
+router.get("/partner/toolkit", gate, readLimiter, async (req,res)=>{
+  try {
+    const actor=await approved(req,res);
+    if (!actor) return;
+    const {data,error}=await db.rpc("partner_toolkit",{p_user:actor.id});
+    if (error) return notAvailable(res);
+    return res.json(data);
+  } catch { return notAvailable(res); }
+});
+
+router.put("/partner/stock/alert", gate, writeLimiter, async (req,res)=>{
+  try {
+    const actor=await approved(req,res);
+    if (!actor) return;
+    const parsed=z.object({enabled:z.boolean(),language}).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({error:"Préférence invalide."});
+    if (!parsed.data.enabled) {
+      const {error}=await db.from("partner_stock_alerts").delete().eq("user_id",actor.id);
+      if (error) return notAvailable(res);
+      return res.json({subscribed:false});
+    }
+    const {data,error}=await db.rpc("subscribe_partner_stock",{p_user:actor.id,p_language:parsed.data.language});
+    if (error) return notAvailable(res);
+    return res.json({subscribed:data===true});
+  } catch { return notAvailable(res); }
+});
+
+router.get("/partner/orders/:id/margin", gate, readLimiter, async (req,res)=>{
+  try {
+    const actor=await approved(req,res);
+    if (!actor) return;
+    if (!orderNumber.test(String(req.params.id))) return res.sendStatus(404);
+    const {data,error}=await db.rpc("partner_order_margin",{p_user:actor.id,p_order:req.params.id});
+    if (error) return notAvailable(res);
+    if (!data) return res.sendStatus(404);
+    return res.json(data);
+  } catch { return notAvailable(res); }
+});
+
+router.put("/partner/orders/:id/margin", gate, writeLimiter, async (req,res)=>{
+  try {
+    const actor=await approved(req,res);
+    if (!actor) return;
+    if (!orderNumber.test(String(req.params.id))) return res.sendStatus(404);
+    const parsed=resale.safeParse(req.body?.resale_price);
+    if (!parsed.success) return res.status(400).json({error:"Prix de revente invalide."});
+    const args={p_user:actor.id,p_order:req.params.id};
+    const {data,error}=await db.rpc("save_partner_resale",{...args,p_resale:parsed.data});
+    if (error) return notAvailable(res);
+    if (!data) return res.sendStatus(404);
+    const margin=await db.rpc("partner_order_margin",args);
+    if (margin.error) return notAvailable(res);
+    return res.json(margin.data);
+  } catch { return notAvailable(res); }
+});
+
+const ticketFields="id,order_id,message,status,reply,created_at,updated_at";
+router.get("/partner/support", gate, readLimiter, async (req,res)=>{
+  try {
+    const actor=await approved(req,res);
+    if (!actor) return;
+    const offset=page(req.query.offset);
+    const {data,error}=await db.from("partner_support_tickets").select(ticketFields)
+      .eq("user_id",actor.id).order("created_at",{ascending:false}).order("id",{ascending:false}).range(offset,offset+20);
+    if (error) return notAvailable(res);
+    return res.json({tickets:data.slice(0,20),has_more:data.length>20});
+  } catch { return notAvailable(res); }
+});
+
+router.post("/partner/orders/:id/support",gate,writeLimiter,async (req,res)=>{
+  try {
+    const actor=await approved(req,res);
+    if (!actor) return;
+    if (!orderNumber.test(String(req.params.id))) return res.sendStatus(404);
+    const parsed=z.string().trim().min(10).max(1500).safeParse(req.body?.message);
+    if (!parsed.success) return res.status(400).json({error:"Décris le problème en 10 à 1 500 caractères."});
+    const {data,error}=await db.rpc("open_partner_ticket",{p_user:actor.id,p_order:req.params.id,p_message:parsed.data});
+    if (error?.code==="23505") return res.status(409).json({error:"Une demande est déjà ouverte pour cette commande."});
+    if (error) return notAvailable(res);
+    if (!data) return res.sendStatus(404);
+    return res.status(201).json({id:data});
+  } catch { return notAvailable(res); }
+});
+
+router.get("/admin/partner-support",gate,readLimiter,requireAdmin,async (req,res)=>{
+  const filter=ticketStatus.safeParse(req.query.status);
+  const offset=page(req.query.offset);
+  let query=db.from("partner_support_tickets").select(ticketFields);
+  if (filter.success) query=query.eq("status",filter.data);
+  const {data,error}=await query.order("created_at",{ascending:false}).order("id",{ascending:false}).range(offset,offset+20);
+  if (error) return notAvailable(res);
+  return res.json({tickets:data.slice(0,20),has_more:data.length>20});
+});
+
+router.put("/admin/partner-support/:id",gate,writeLimiter,requireAdmin,async (req:AuthedRequest,res)=>{
+  const parsed=z.object({status:ticketStatus,reply:z.string().trim().max(1500)}).safeParse(req.body);
+  if (!uuid.safeParse(req.params.id).success) return res.sendStatus(404);
+  if (!parsed.success) return res.status(400).json({error:"Vérifie les informations de la demande."});
+  const {data,error}=await db.from("partner_support_tickets").update({
+    status:parsed.data.status,reply:parsed.data.reply||null,updated_at:new Date().toISOString(),
+  }).eq("id",req.params.id).select("id,order_id").maybeSingle();
+  if (error?.code==="23505") return res.status(409).json({error:"Une demande est déjà ouverte pour cette commande."});
+  if (error) return notAvailable(res);
+  if (!data) return res.sendStatus(404);
+  void appendAuditLog({action:"partner_support_update",actorUserId:req.adminUserId,targetType:"partner_support_ticket",
+    targetId:data.id,details:{status:parsed.data.status,order_id:data.order_id}});
+  return res.json({saved:true});
+});
 
 router.get("/partner/stock", gate, readLimiter, async (req, res) => {
   try {

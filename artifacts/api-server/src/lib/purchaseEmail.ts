@@ -348,3 +348,21 @@ export async function sendPartnerRenewalReminder(
       <p>${expiry} ${escapeHtml(date)}.</p><p><a href="${url}">${action}</a></p></body></html>`,
   });
 }
+
+export function sendPartnerStockAlert(
+  alert: { email:string; language:string; subscription_id:string }, config:PurchaseEmailConfig,
+) {
+  const [subject, body, action] = {
+    fr: ["Netflix de nouveau disponible", "Un profil Netflix est de nouveau disponible. Le stock peut changer rapidement.", "Voir le stock"],
+    en: ["Netflix back in stock", "A Netflix profile is available again. Stock may change quickly.", "View stock"],
+    ar: ["Netflix متاح مجددًا", "يتوفر ملف Netflix مجددًا. قد يتغير المخزون بسرعة.", "عرض المخزون"],
+  }[alert.language as "fr" | "en" | "ar"] || [
+    "Netflix de nouveau disponible", "Un profil Netflix est de nouveau disponible.", "Voir le stock",
+  ];
+  const url = "https://www.aura-stream.com/#partner";
+  return sendTransactionalMessage(config,{
+    to:alert.email,subject,text:`${body}\n${action} : ${url}`,
+    html:`<html><body><h1>${subject}</h1><p>${body}</p><p><a href="${url}">${action}</a></p></body></html>`,
+    idempotencyKey:`partner-stock-${alert.subscription_id}`,tag:"partner-stock",
+  });
+}
