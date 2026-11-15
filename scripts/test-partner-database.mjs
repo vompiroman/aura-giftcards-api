@@ -17,10 +17,14 @@ try {
   await db.exec(await file("./fixtures/partner-schema.sql"));
   await db.exec(await file("../supabase/migrations/20260824101500_atomic_slickpay_observations.sql"));
   await db.exec(await file("../supabase/migrations/20261114193941_partner_program.sql"));
+  await db.exec(await file("../supabase/migrations/20261115154539_partner_operations.sql"));
   await q("insert into auth.users values($1),($2),($3)",[u,admin,other]);
   for (const role of ["anon","authenticated"]) {
     assert.equal(await scalar("select has_table_privilege($1,'public.wallet_transactions','select')",[role]),false);
     assert.equal(await scalar("select has_function_privilege($1,'public.observe_wallet_deposit(uuid,text,text,numeric)','execute')",[role]),false);
+    assert.equal(await scalar("select has_function_privilege($1,'public.partner_netflix_stock()','execute')",[role]),false);
+    assert.equal(await scalar("select has_table_privilege($1,'public.partner_reminder_deliveries','select')",[role]),false);
+    assert.equal(await scalar("select has_table_privilege($1,'public.partner_order_settings','select')",[role]),false);
   }
   await db.exec("set role authenticated");
   await assert.rejects(() => q("insert into public.orders(order_id,amount,status,payment_status,items,partner_user_id) values ('forged',1,'pending','paid','[]',$1)",[u]), /PARTNER_ORDER_REQUIRES_SERVER/);
@@ -96,5 +100,31 @@ try {
   const ledger=await q("select kind,count(*)::int as count from public.wallet_transactions group by kind order by kind");
   assert.deepEqual(ledger,[{kind:"DEPOSIT",count:3},{kind:"PURCHASE",count:2},{kind:"REFUND",count:1}]);
   assert.equal(Number((await state(other)).wallet_balance),0);
+  await db.exec("reset role");
+  await db.exec(`insert into public.inventory(assigned_order_id,is_used,service,account_email) values
+    (null,false,'Netflix','one@example.invalid'),(null,false,'NETFLIX','ONE@example.invalid'),
+    (null,false,'Netflix','two@example.invalid'),('used',true,'Netflix','used@example.invalid'),
+    (null,false,'Spotify','other@example.invalid')`);
+  await db.exec("set role service_role");
+  assert.deepEqual(await scalar("select public.partner_netflix_stock()"),{profiles:3,accounts:2});
+  await q("update public.orders set items=$2,status='active',expires_at=now()+interval '6 days' where order_id=$1",
+    [card.order_id,JSON.stringify([{name:"Netflix Premium 1 mois",quantity:1}])]);
+  assert.equal(await scalar("select public.save_partner_order_settings($1,$2,'Client A',true,'fr')",[u,card.order_id]),true);
+  assert.equal(await scalar("select public.save_partner_order_settings($1,$2,'Other',false,'fr')",[other,card.order_id]),false);
+  const page = "select * from public.partner_order_page($1,'netflix','expiring',0)";
+  assert.equal((await q(page,[u]))[0].partner_client_reference,"Client A");
+  assert.equal((await q(page,[other])).length,0);
+  const month = await scalar("select public.partner_monthly_summary($1,now()-interval '1 day',now()+interval '1 day')",[u]);
+  assert.equal(month.spent,6500);
+  assert.equal(month.deposits,6000);
+  const exported = await q("select * from public.partner_monthly_entries($1,now()-interval '1 day',now()+interval '1 day',0)",[u]);
+  assert.ok(exported.some(row=>row.client_reference==="Client A" && row.kind==="ORDER"));
+  assert.ok(exported.some(row=>row.kind==="REFUND"));
+  const claim = () => q("select * from public.claim_partner_reminders(8)");
+  assert.equal((await claim())[0].days_before,7);
+  assert.equal((await claim()).length,0);
+  await q("update public.orders set expires_at=now()+interval '1 day' where order_id=$1",[card.order_id]);
+  assert.equal((await claim())[0].days_before,2);
+  assert.equal((await claim()).length,0);
   console.log("PostgreSQL: candidature, verrouillage, dépôt, doublons, montants, plafonds, débit, paliers, SlickPay, remboursement et privilèges validés.");
 } finally {await db.close();}

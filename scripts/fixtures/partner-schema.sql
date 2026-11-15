@@ -9,9 +9,11 @@ create table public.orders (
  marketing_consent_at timestamptz, consent_version text, customer_whatsapp text,
  slickpay_invoice_id text unique, payment_last_checked_at timestamptz, payment_provider_status text,
  payment_provider_amount numeric, payment_check_count integer not null default 0,
- payment_confirmed_at timestamptz, payment_confirmation_source text
+ payment_confirmed_at timestamptz, payment_confirmation_source text,
+ created_at timestamptz not null default now(), expires_at timestamptz
 );
-create table public.inventory(id uuid primary key default gen_random_uuid(), assigned_order_id text, is_used boolean);
+create table public.inventory(id uuid primary key default gen_random_uuid(), assigned_order_id text, is_used boolean,
+  service text, account_email text);
 grant select,insert,update on public.orders to service_role;
 grant insert,update on public.orders to authenticated;
 grant select on public.inventory to service_role;
