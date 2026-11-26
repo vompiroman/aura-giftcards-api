@@ -34,6 +34,7 @@ try {
   await q("insert into public.orders(order_id,assigned_email,amount,status,payment_status,items) values ('ORD-legacy',$1,100,'active','paid','[{\"name\":\"Spotify 1 mois\"}]')",[userEmail]);
   await db.exec(await file("../supabase/migrations/20261126192500_link_orders_to_customer_identity.sql"));
   await db.exec(await file("../supabase/migrations/20261126193500_expire_stalled_wallet_deposits.sql"));
+  await db.exec(await file("../supabase/migrations/20261126194500_claim_netflix_login_requests.sql"));
   assert.equal(await scalar("select customer_user_id from public.orders where order_id='ORD-legacy'"),u);
   await db.exec("set role authenticated");
   await assert.rejects(()=>q("insert into public.orders(order_id,amount,status,payment_status,items,customer_user_id) values ('ORD-untrusted',1,'pending','unpaid','[]',$1)",[u]),/ORDER_OWNER_REQUIRES_SERVER/);
@@ -41,6 +42,17 @@ try {
   await q("insert into public.orders(order_id,assigned_email,customer_user_id,amount,status,payment_status,items,renewal_order_id) values ('ORD-valid-renewal','new@example.invalid',$1,100,'pending','paid','[{\"name\":\"Spotify 1 mois\"}]','ORD-legacy'), ('ORD-other-renewal',$3,$2,100,'pending','paid','[{\"name\":\"Spotify 1 mois\"}]','ORD-legacy')",[u,other,userEmail]);
   await assert.rejects(()=>scalar("select public.assign_inventory_for_order('ORD-other-renewal',now())"), /RENEWAL_ORDER_INVALID/);
   assert.equal((await scalar("select public.assign_inventory_for_order('ORD-valid-renewal',now())")).status,"awaiting_manual_activation");
+  const inventoryOne=randomUUID(), inventoryTwo=randomUUID(), sharedMailbox="a".repeat(64);
+  await q("update public.orders set expires_at = (now()+interval '1 hour') at time zone 'UTC' where order_id in ('ORD-valid-renewal','ORD-other-renewal')");
+  await q("insert into public.inventory(id,assigned_order_id,is_used,service) values($1,'ORD-valid-renewal',true,'Netflix'),($2,'ORD-other-renewal',true,'Netflix')",[inventoryOne,inventoryTwo]);
+  const claimNetflix=(order,profile,actor)=>scalar("select public.begin_netflix_login_request($1,$2,$3,$4)",[sharedMailbox,order,profile,actor]);
+  const login=await claimNetflix("ORD-valid-renewal",inventoryOne,u);
+  assert.equal((await claimNetflix("ORD-valid-renewal",inventoryOne,u)).request_id,login.request_id);
+  assert.equal(await claimNetflix("ORD-other-renewal",inventoryTwo,other),null);
+  assert.equal(await scalar("select public.finish_netflix_login_request($1,$2)",[login.request_id,u]),true);
+  assert.equal(await scalar("select public.finish_netflix_login_request($1,$2)",[login.request_id,u]),false);
+  assert.notEqual((await claimNetflix("ORD-other-renewal",inventoryTwo,other)).request_id,login.request_id);
+  await q("delete from public.inventory where id in ($1,$2)",[inventoryOne,inventoryTwo]);
   await q("delete from public.orders where order_id in ('ORD-valid-renewal','ORD-other-renewal','ORD-legacy')");
   for (const role of ["anon","authenticated"]) {
     assert.equal(await scalar("select has_table_privilege($1,'public.wallet_transactions','select')",[role]),false);
