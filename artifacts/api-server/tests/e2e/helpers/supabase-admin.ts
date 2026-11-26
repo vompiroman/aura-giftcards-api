@@ -12,6 +12,7 @@ export const admin: SupabaseClient = createClient(
 export interface OrderRow {
   order_id: string;
   status: string;
+  payment_status: string;
   amount: number;
   created_at: string;
 }
@@ -19,7 +20,7 @@ export interface OrderRow {
 export async function getOrder(orderId: string): Promise<OrderRow | null> {
   const { data, error } = await admin
     .from("orders")
-    .select("order_id, status, amount, created_at")
+    .select("order_id, status, payment_status, amount, created_at")
     .eq("order_id", orderId)
     .maybeSingle();
   if (error) throw new Error(`getOrder(${orderId}) : ${error.message}`);
@@ -41,7 +42,7 @@ export async function countAssignedInventory(orderId: string): Promise<number> {
 export async function cleanupOrder(orderId: string): Promise<void> {
   const { error: relErr } = await admin
     .from("inventory")
-    .update({ assigned_order_id: null, assigned_at: null })
+    .update({ is_used: false, assigned_order_id: null, assigned_user_id: null, assigned_at: null })
     .eq("assigned_order_id", orderId);
   if (relErr) throw new Error(`cleanup inventory(${orderId}) : ${relErr.message}`);
 

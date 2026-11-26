@@ -13,18 +13,44 @@ import { runPurchaseEmailDelivery } from "../jobs/purchaseEmailDelivery";
 import { runPartnerReminders } from "../jobs/partnerReminders";
 import { runPartnerStockAlerts } from "../jobs/partnerStockAlerts";
 import { observeSlickPayPayment } from "../lib/slickpayObservation";
+import { deliverPendingActivationNotifications } from "../jobs/activationNotificationDelivery";
 
 const router = Router();
 
 const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
 
-function validCronSecret(received: string | undefined): boolean {
-  const expected = process.env.CRON_SECRET || "";
+function validCronSecret(received: string | undefined, expected = process.env.CRON_SECRET || ""): boolean {
   if (!received || !expected) return false;
   const a = Buffer.from(received);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+
+router.post("/cron/operations", async (req, res) => {
+  const expected = process.env.SUPABASE_OPERATIONS_CRON_SECRET;
+  if (!expected || !validCronSecret(req.get("x-cron-secret"), expected)) {
+    res.sendStatus(401);
+    return;
+  }
+  const jobs = {
+    payments: runPaymentReconciliation(req.log),
+    email: runPurchaseEmailDelivery(req.log),
+    renewals: runPartnerReminders(),
+    stock: runPartnerStockAlerts(),
+    activation: deliverPendingActivationNotifications(),
+  };
+  const results = await Promise.allSettled(Object.values(jobs));
+  const outcomes = Object.fromEntries(Object.keys(jobs).map((name, index) => {
+    const result = results[index];
+    return [name, result.status === "fulfilled" ? result.value : { error: true }];
+  }));
+  const failed = results.some(result => {
+    if (result.status === "rejected") return true;
+    const summary = result.value as { errors?: number; failed?: number };
+    return (summary.errors ?? 0) > 0 || (summary.failed ?? 0) > 0;
+  });
+  res.status(failed ? 503 : 200).json(outcomes);
+});
 
 async function readBoundedProviderText(response: globalThis.Response): Promise<string> {
   const announcedLength = Number(response.headers.get("content-length"));

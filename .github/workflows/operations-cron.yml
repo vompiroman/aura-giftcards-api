@@ -2,7 +2,8 @@ name: Payment, activation and email reconciliation
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # Supabase schedules pending operations. Keep a periodic external fallback.
+    - cron: "17 */6 * * *"
   workflow_dispatch:
     inputs:
       verify_integrations:

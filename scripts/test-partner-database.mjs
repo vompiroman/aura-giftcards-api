@@ -30,6 +30,8 @@ try {
   assert.equal(await scalar("update public.orders set status='active' where order_id='ORD-revision' returning activation_revision"),2);
   await q("delete from public.orders where order_id='ORD-revision'");
   await q("delete from public.inventory where profile_pin is not null");
+  await db.exec(await file("../supabase/migrations/20261126195500_require_encrypted_inventory_pins.sql"));
+  await assert.rejects(() => q("insert into public.inventory(profile_pin) values ('0123')"), /inventory_profile_pin_check/);
   await q("insert into auth.users(id,email,email_confirmed_at,created_at) values($1,$4,now(),now()-interval '1 day'),($2,null,null,now()),($3,null,null,now())",[u,admin,other,userEmail]);
   await q("insert into public.orders(order_id,assigned_email,amount,status,payment_status,items) values ('ORD-legacy',$1,100,'active','paid','[{\"name\":\"Spotify 1 mois\"}]')",[userEmail]);
   await db.exec(await file("../supabase/migrations/20261126192500_link_orders_to_customer_identity.sql"));
@@ -54,6 +56,23 @@ try {
   assert.notEqual((await claimNetflix("ORD-other-renewal",inventoryTwo,other)).request_id,login.request_id);
   await q("delete from public.inventory where id in ($1,$2)",[inventoryOne,inventoryTwo]);
   await q("delete from public.orders where order_id in ('ORD-valid-renewal','ORD-other-renewal','ORD-legacy')");
+  await db.exec(`
+    create schema vault; create schema net; create schema cron;
+    create table vault.decrypted_secrets (name text, decrypted_secret text);
+    create table net.requests (id bigint generated always as identity, url text);
+    create function net.http_post(url text,body jsonb,headers jsonb,timeout_milliseconds integer)
+      returns bigint language sql as $$insert into net.requests(url) values($1) returning id$$;
+    create function cron.schedule(text,text,text) returns bigint language sql as $$select 1::bigint$$;
+  `);
+  const operationsSql=await file("../supabase/migrations/20261126195000_schedule_pending_operations.sql");
+  await db.exec(operationsSql.replace(/^create extension[^;]+;$/gm,""));
+  assert.equal(await scalar("select aura_internal.schedule_operations(true)"),null);
+  await q("insert into vault.decrypted_secrets values ('aura_operations_cron_secret','fixture')");
+  assert.equal(await scalar("select aura_internal.schedule_operations()"),null);
+  await q("insert into public.orders(order_id,amount,status,payment_status,items,slickpay_invoice_id) values ('ORD-cron',100,'pending','unpaid','[]','fixture')");
+  assert.equal(Number(await scalar("select aura_internal.schedule_operations()")),1);
+  assert.equal(await scalar("select count(*)::int from aura_internal.operation_requests"),1);
+  await q("delete from public.orders where order_id='ORD-cron'");
   for (const role of ["anon","authenticated"]) {
     assert.equal(await scalar("select has_table_privilege($1,'public.wallet_transactions','select')",[role]),false);
     assert.equal(await scalar("select has_function_privilege($1,'public.observe_wallet_deposit(uuid,text,text,numeric)','execute')",[role]),false);

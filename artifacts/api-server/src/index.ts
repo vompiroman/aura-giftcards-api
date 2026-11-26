@@ -2,7 +2,6 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { schedulePaymentReconciliationInterval } from "./jobs/paymentReconciliation";
 import { schedulePurchaseEmailDeliveryInterval } from "./jobs/purchaseEmailDelivery";
-import { encryptLegacyInventoryPins } from "./jobs/inventoryPinMigration";
 
 const rawPort = process.env["PORT"];
 
@@ -22,7 +21,4 @@ app.listen(port, "0.0.0.0", () => {
   logger.info({ port }, "Server listening on 0.0.0.0");
   schedulePaymentReconciliationInterval();
   schedulePurchaseEmailDeliveryInterval();
-  void encryptLegacyInventoryPins()
-    .then(migrated => { if (migrated) logger.info({ migrated }, "Legacy profile PINs encrypted"); })
-    .catch(() => logger.warn("Could not encrypt legacy profile PINs"));
 });
