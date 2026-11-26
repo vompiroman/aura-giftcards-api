@@ -30,7 +30,17 @@ try {
   assert.equal(await scalar("update public.orders set status='active' where order_id='ORD-revision' returning activation_revision"),2);
   await q("delete from public.orders where order_id='ORD-revision'");
   await q("delete from public.inventory where profile_pin is not null");
-  await q("insert into auth.users values($1),($2),($3)",[u,admin,other]);
+  await q("insert into auth.users(id,email,email_confirmed_at,created_at) values($1,$4,now(),now()-interval '1 day'),($2,null,null,now()),($3,null,null,now())",[u,admin,other,userEmail]);
+  await q("insert into public.orders(order_id,assigned_email,amount,status,payment_status,items) values ('ORD-legacy',$1,100,'active','paid','[{\"name\":\"Spotify 1 mois\"}]')",[userEmail]);
+  await db.exec(await file("../supabase/migrations/20261126192500_link_orders_to_customer_identity.sql"));
+  assert.equal(await scalar("select customer_user_id from public.orders where order_id='ORD-legacy'"),u);
+  await db.exec("set role authenticated");
+  await assert.rejects(()=>q("insert into public.orders(order_id,amount,status,payment_status,items,customer_user_id) values ('ORD-untrusted',1,'pending','unpaid','[]',$1)",[u]),/ORDER_OWNER_REQUIRES_SERVER/);
+  await db.exec("reset role");
+  await q("insert into public.orders(order_id,assigned_email,customer_user_id,amount,status,payment_status,items,renewal_order_id) values ('ORD-valid-renewal','new@example.invalid',$1,100,'pending','paid','[{\"name\":\"Spotify 1 mois\"}]','ORD-legacy'), ('ORD-other-renewal',$3,$2,100,'pending','paid','[{\"name\":\"Spotify 1 mois\"}]','ORD-legacy')",[u,other,userEmail]);
+  await assert.rejects(()=>scalar("select public.assign_inventory_for_order('ORD-other-renewal',now())"), /RENEWAL_ORDER_INVALID/);
+  assert.equal((await scalar("select public.assign_inventory_for_order('ORD-valid-renewal',now())")).status,"awaiting_manual_activation");
+  await q("delete from public.orders where order_id in ('ORD-valid-renewal','ORD-other-renewal','ORD-legacy')");
   for (const role of ["anon","authenticated"]) {
     assert.equal(await scalar("select has_table_privilege($1,'public.wallet_transactions','select')",[role]),false);
     assert.equal(await scalar("select has_function_privilege($1,'public.observe_wallet_deposit(uuid,text,text,numeric)','execute')",[role]),false);

@@ -1,7 +1,8 @@
 import { Router, Request, Response as ExpressResponse } from "express";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
-import { supabaseAuth, supabaseAdmin as supabase } from "../lib/supabase";
+import { supabaseAdmin as supabase } from "../lib/supabase";
+import { getAuthedOrderUser } from "../lib/orderOwnership";
 import { PRICES } from "../config/prices";
 import { notifyAdmin } from "../lib/notifyAdmin";
 import { recordPaymentFailure } from "../lib/paymentAlerts";
@@ -75,16 +76,6 @@ const verifyPaymentLimiter = rateLimit({
   },
   message: { error: "Trop de vérifications de paiement, réessayez dans une minute." },
 });
-
-async function getAuthedEmail(req: Request): Promise<string | null> {
-  const h = req.headers.authorization || "";
-  if (!h.startsWith("Bearer ")) return null;
-  const token = h.slice(7).trim();
-  if (!token) return null;
-  const { data, error } = await supabaseAuth.auth.getUser(token);
-  if (error || !data?.user?.email) return null;
-  return data.user.email.trim().toLowerCase();
-}
 
 // Construction des lignes SlickPay (exige { name, price, quantity })
 function buildSlickpayItems(
@@ -223,11 +214,12 @@ async function releaseClaim(orderId: string, claim: string): Promise<void> {
 
 router.post("/create-invoice", invoiceLimiter, async (req: Request, res: ExpressResponse): Promise<void> => {
   try {
-    const email = await getAuthedEmail(req);
-    if (!email) {
+    const actor = await getAuthedOrderUser(req);
+    if (!actor) {
       res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
+    const { email } = actor;
 
     const { order_id } = req.body;
     if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id)) {
@@ -237,7 +229,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
 
     const { data: order, error: fetchError } = await supabase
       .from("orders")
-      .select("order_id, assigned_email, amount, status, payment_status, promo_code_id, renewal_order_id, slickpay_invoice_id, items")
+      .select("order_id, assigned_email, customer_user_id, amount, status, payment_status, promo_code_id, renewal_order_id, slickpay_invoice_id, items")
       .eq("order_id", order_id)
       .single();
 
@@ -247,7 +239,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
       return;
     }
 
-    if (order.assigned_email?.toLowerCase() !== email.toLowerCase()) {
+    if (order.customer_user_id !== actor.id) {
       res.status(403).json({ error: "Accès refusé à cette commande." });
       return;
     }
@@ -331,7 +323,7 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
       .from("orders")
       .update({ slickpay_invoice_id: claim })
       .eq("order_id", order.order_id)
-      .eq("assigned_email", email)
+      .eq("customer_user_id", actor.id)
       .eq("status", "pending")
       .eq("payment_status", "unpaid")
       .is("slickpay_invoice_id", null)
@@ -456,8 +448,8 @@ router.post("/create-invoice", invoiceLimiter, async (req: Request, res: Express
 
 router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: ExpressResponse): Promise<void> => {
   try {
-    const email = await getAuthedEmail(req);
-    if (!email) {
+    const actor = await getAuthedOrderUser(req);
+    if (!actor) {
       res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
@@ -470,7 +462,7 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
 
     const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("order_id, assigned_email, amount, status, payment_status, promo_code_id, renewal_order_id, slickpay_invoice_id, items, expires_at, marketing_consent, meta_purchase_sent_at")
+      .select("order_id, assigned_email, customer_user_id, amount, status, payment_status, promo_code_id, renewal_order_id, slickpay_invoice_id, items, expires_at, marketing_consent, meta_purchase_sent_at")
       .eq("order_id", orderId)
       .single();
 
@@ -478,7 +470,7 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
       res.status(404).json({ error: "Commande introuvable." });
       return;
     }
-    if (order.assigned_email?.trim().toLowerCase() !== email) {
+    if (order.customer_user_id !== actor.id) {
       res.status(403).json({ error: "Accès refusé à cette commande." });
       return;
     }

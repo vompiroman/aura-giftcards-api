@@ -27,6 +27,7 @@ function existingOrderBuilder() {
     data: {
       order_id: "ORD-existing-invoice",
       assigned_email: "client@example.com",
+      customer_user_id: "user-123",
       amount: 600,
       status: "pending",
       payment_status: "unpaid",
@@ -50,6 +51,7 @@ describe("POST /api/create-invoice retry", () => {
   });
 
   it("réutilise la facture SlickPay existante au lieu de créer une nouvelle commande", async () => {
+    getUserMock.mockResolvedValue({ data: { user: { id: "user-123", email: "updated@example.invalid" } }, error: null });
     fetchSlickPayInvoiceMock.mockResolvedValue({
       state: "pending",
       amount: 600,
@@ -70,6 +72,15 @@ describe("POST /api/create-invoice retry", () => {
       reused: true,
     });
     expect(fetchSlickPayInvoiceMock).toHaveBeenCalledWith("invoice-123", 15_000);
+  });
+
+  it("refuse la facture et sa vérification à un nouvel utilisateur de l’ancienne adresse", async () => {
+    getUserMock.mockResolvedValue({ data: { user: { id: "different-user", email: "client@example.com" } }, error: null });
+    for (const path of ["/create-invoice", "/verify-payment"]) {
+      await request(app).post(`/api${path}`).set("Authorization", "Bearer second-test-session")
+        .send({ order_id: "ORD-existing-invoice" }).expect(403);
+    }
+    expect(fetchSlickPayInvoiceMock).not.toHaveBeenCalled();
   });
 
   it("ne renvoie jamais une URL de redirection hors des domaines de paiement autorisés", async () => {

@@ -6,10 +6,12 @@ import { recordPaymentFailure, resetPaymentFailure } from "./paymentAlerts";
 import { clientPromoHash } from "./promos";
 import { expiresAtFromItems } from "./payments";
 import { deliverActivationNotificationsForOrder } from "../jobs/activationNotificationDelivery";
+import { sameOrderOwner } from "./orderOwnership";
 
 export interface PayableOrder {
   order_id: string;
   assigned_email?: string | null;
+  customer_user_id?: string | null;
   status: string;
   payment_status: string;
   promo_code_id?: string | null;
@@ -89,15 +91,13 @@ export async function fulfillVerifiedPayment(
   if (order.renewal_order_id) {
     const { data: renewedOrder, error: renewedOrderError } = await supabaseAdmin
       .from("orders")
-      .select("order_id, assigned_email, payment_status, status, expires_at")
+      .select("order_id, customer_user_id, payment_status, status, expires_at")
       .eq("order_id", order.renewal_order_id)
       .maybeSingle();
-    const sameOwner = String(renewedOrder?.assigned_email || "").trim().toLowerCase()
-      === String(order.assigned_email || "").trim().toLowerCase();
     if (
       renewedOrderError
       || !renewedOrder
-      || !sameOwner
+      || !sameOrderOwner(order, renewedOrder)
       || renewedOrder.payment_status !== "paid"
       || !["active", "completed"].includes(String(renewedOrder.status))
     ) {

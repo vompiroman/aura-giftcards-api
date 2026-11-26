@@ -35,12 +35,12 @@ it("applique l’heure de réception réelle et renvoie le contenu d’un seul m
   vi.stubEnv("IMAP_HOST", "imap.hostinger.com");
   vi.stubEnv("IMAP_ADMIN_USER", "mailbox@example.invalid");
   vi.stubEnv("IMAP_ADMIN_PASS", "mailbox-test-value");
-  getUser.mockResolvedValue({ data: { user: { email: "customer@example.invalid" } }, error: null });
+  getUser.mockResolvedValue({ data: { user: { id: "customer-id", email: "new-address@example.invalid" } }, error: null });
   const query = {
     select: vi.fn(() => query),
     eq: vi.fn(() => query),
     single: vi.fn(async () => ({
-      data: { assigned_email: "customer@example.invalid", status: "active", payment_status: "paid" },
+      data: { customer_user_id: "customer-id", status: "active", payment_status: "paid" },
       error: null,
     })),
     ilike: vi.fn(async () => ({
