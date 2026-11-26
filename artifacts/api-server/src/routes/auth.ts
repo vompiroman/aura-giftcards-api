@@ -105,7 +105,7 @@ function publicUser(user: any) {
       phone: metadata.phone,
       cart: Array.isArray(metadata.cart) ? metadata.cart : undefined,
     },
-    is_admin: isAdmin(user.email, user.app_metadata),
+    is_admin: isAdmin(user),
   };
 }
 
@@ -247,7 +247,7 @@ router.post("/login", loginLimiter, async (req, res) => {
       expires_at: data.session.expires_at,
       user: publicUser(data.user),
     });
-    if (isAdmin(data.user?.email, data.user?.app_metadata)) {
+    if (isAdmin(data.user)) {
       void appendAuditLog({
         action: "admin_login",
         actorUserId: data.user?.id,

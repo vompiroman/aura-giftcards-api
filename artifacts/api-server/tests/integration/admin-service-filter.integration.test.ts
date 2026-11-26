@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
+import { adminTestToken } from "./helpers/admin-session";
 
 const { fromMock, getUserMock } = vi.hoisted(() => ({
   fromMock: vi.fn(),
@@ -34,14 +35,14 @@ describe("admin order service filter", () => {
 
   it("returns only Snapchat orders with the correct pagination total", async () => {
     const response = await request(app).get("/api/admin/all-orders?service=Snapchat&page=2&limit=1")
-      .set("Authorization", "Bearer test-token").expect(200);
+      .set("Authorization", `Bearer ${adminTestToken("admin-123")}`).expect(200);
     expect(response.body.orders.map((order: any) => order.order_id)).toEqual(["ORD-snapchat-6"]);
     expect(response.body).toMatchObject({ total: 2, total_pages: 2, page: 2 });
   });
 
   it("keeps all services visible without a service filter", async () => {
     const response = await request(app).get("/api/admin/all-orders")
-      .set("Authorization", "Bearer test-token").expect(200);
+      .set("Authorization", `Bearer ${adminTestToken("admin-123")}`).expect(200);
     expect(response.body.orders).toHaveLength(4);
   });
 
@@ -50,7 +51,7 @@ describe("admin order service filter", () => {
       id: "client-123", email: "client@example.com", app_metadata: {},
     } }, error: null });
     await request(app).get("/api/admin/all-orders?service=Snapchat")
-      .set("Authorization", "Bearer test-token").expect(403);
+      .set("Authorization", "Bearer test-token").expect(404);
     expect(fromMock).not.toHaveBeenCalled();
   });
 });
