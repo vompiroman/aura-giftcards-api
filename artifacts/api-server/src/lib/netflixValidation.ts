@@ -52,17 +52,19 @@ function isApprovedNetflixUrl(value: string): boolean {
 }
 
 export function extractNetflixCode(text: string, html: string, subject?: string): { code?: string; link?: string } {
-  const lowerSubject = (subject || "").normalize("NFD").toLowerCase();
+  const searchableText = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const lowerSubject = searchableText(subject || "");
   const forbiddenKeywords = [
-    "mot de passe", "password", "contraseÃ±a", "reinitialis", "reset",
+    "mot de passe", "password", "contrasena", "reinitialis", "reset",
     "restablece", "changement d'adresse", "update your email", "change your email",
+    "كلمة المرور", "تغيير البريد الالكتروني",
   ];
   if (forbiddenKeywords.some((kw) => lowerSubject.includes(kw))) return {};
 
   const haystack = `${text || ""}\n${html || ""}`;
   const candidates = haystack.match(/https?:\/\/[^\s"'<>]+/gi) || [];
   const link = candidates.find(isApprovedNetflixUrl);
-  const codeMatch = haystack.match(/(?:code|cÃ³digo|codice|zugangscode|verification code|code de vÃ©rification|votre code|access code|temporaire|connexion|login)\D{0,40}\b(\d{4})\b/i);
+  const codeMatch = searchableText(haystack).match(/(?:code|codigo|codice|zugangscode|temporaire|connexion|login|رمز تسجيل الدخول)\D{0,40}\b(\d{4})\b/);
   return { code: codeMatch?.[1], link };
 }
 

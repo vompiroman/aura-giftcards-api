@@ -2,7 +2,10 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["tests/integration/**/*.integration.test.ts"],
+    include: [
+      "tests/integration/**/*.integration.test.ts",
+      ...(process.env.PGLITE_ENTRY ? ["tests/transaction/**/*.test.ts"] : []),
+    ],
     environment: "node",
     globals: false,
     // Pas d'appels réseau réels : timeouts courts suffisent.

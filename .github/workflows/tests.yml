@@ -43,11 +43,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --audit-level high
-      - run: pnpm --filter @workspace/api-server test:integration
-      - name: Verify partner transactions in PostgreSQL
+      - name: Verify HTTP and PostgreSQL payment flows
         run: |
           npm install --prefix "$RUNNER_TEMP/aura-partner-db" --ignore-scripts --no-audit --no-fund @electric-sql/pglite@0.5.16
-          PGLITE_ENTRY="$RUNNER_TEMP/aura-partner-db/node_modules/@electric-sql/pglite/dist/index.js" node scripts/test-partner-database.mjs
+          export PGLITE_ENTRY="$RUNNER_TEMP/aura-partner-db/node_modules/@electric-sql/pglite/dist/index.js"
+          pnpm --filter @workspace/api-server test:integration
+          node scripts/test-partner-database.mjs
 
   e2e:
     runs-on: ubuntu-latest

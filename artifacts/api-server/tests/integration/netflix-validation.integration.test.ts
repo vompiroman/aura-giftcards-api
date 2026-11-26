@@ -41,5 +41,13 @@ describe("validation des messages Netflix", () => {
     expect(extractNetflixCode(text, "").link).toBe("https://www.netflix.com/verify/EMAIL_good");
     expect(extractNetflixCode("http://www.netflix.com/verify/EMAIL_http", "").link).toBeUndefined();
   });
+
+  it.each(["Réinitialisez votre accès", "Actualiza tu contraseña", "أعد تعيين كلمة المرور"])(
+    "ignore les messages de récupération quelle que soit la langue",
+    subject => {
+      const text = "Code 1234 https://www.netflix.com/verify/EMAIL_fixture";
+      expect(extractNetflixCode(text, "", subject)).toEqual({});
+    },
+  );
 });
 
