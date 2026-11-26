@@ -1,4 +1,8 @@
+import { Resolver } from "node:dns/promises";
+import { dkimVerify } from "mailauth/lib/dkim/verify.js";
+
 const NETFLIX_HOST = "netflix.com";
+const dkimResolver = new Resolver({ timeout: 1200, tries: 1 });
 
 export function isAllowedNetflixHostname(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase().replace(/\.$/, "");
@@ -13,12 +17,25 @@ export function isNetflixSenderAddress(address: unknown): boolean {
   return isAllowedNetflixHostname(domain);
 }
 
-export function isAuthenticNetflix(parsed: any): boolean {
-  const authResults = String(parsed?.headers?.get?.("authentication-results") || "").toLowerCase();
-  return authResults.split(";").some((clause) => {
-    if (!/(?:^|\s)dkim\s*=\s*pass\b/i.test(clause)) return false;
-    const domain = clause.match(/(?:^|\s)(?:header\.)?d\s*=\s*([a-z0-9.-]+)/i)?.[1] || "";
-    return isAllowedNetflixHostname(domain);
+export async function isAuthenticNetflix(source: Buffer): Promise<boolean> {
+  const verification = await dkimVerify(source, {
+    rejectRsaSha1: true,
+    resolver: async (name, rrtype) => {
+      const domain = /\._domainkey\.(.+)$/i.exec(name)?.[1];
+      if (rrtype !== "TXT" || !domain || !isAllowedNetflixHostname(domain)) {
+        throw Object.assign(new Error("Unexpected DKIM key domain"), { code: "ENODATA" });
+      }
+      return dkimResolver.resolveTxt(name);
+    },
+  });
+  if (verification.fromFields !== 1 || verification.headerFrom.length !== 1 || !isNetflixSenderAddress(verification.headerFrom[0])) return false;
+  if (verification.headers?.parsed.filter(header => header.key === "to").length !== 1) return false;
+  if (verification.headers.parsed.filter(header => header.key === "subject").length !== 1) return false;
+  return verification.results.some(result => {
+    if (result.status.result !== "pass" || result.signatureTimeValid === false || result.canonBodyLengthLimited ||
+      !isAllowedNetflixHostname(result.signingDomain || "")) return false;
+    const signedHeaders = (result.signingHeaders?.headers || []).map(header => header.split(":")[0].toLowerCase());
+    return ["from", "to", "subject"].every(header => signedHeaders.includes(header));
   });
 }
 

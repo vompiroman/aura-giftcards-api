@@ -3,7 +3,7 @@ import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 import { supabaseAuth as supabase, supabaseAdmin } from "../lib/supabase";
 import { ImapFlow } from "imapflow";
-import { simpleParser } from "mailparser";
+import { simpleParser, type ParsedMail } from "mailparser";
 import { computeCart } from "../config/prices";
 import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
 import { deliverPendingActivationNotifications } from "../jobs/activationNotificationDelivery";
@@ -1097,36 +1097,10 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
   }
 });
 
-function recipientMatches(parsed: any, target: string): boolean {
-  if (!target) return true;
+function recipientMatches(parsed: Pick<ParsedMail, "to">, target: string): boolean {
   const lowerTarget = target.toLowerCase().trim();
-  const collect = (addrObj: any): string[] => {
-    if (!addrObj) return [];
-    const list = Array.isArray(addrObj) ? addrObj : [addrObj];
-    return list.flatMap((a: any) => (a.value || []).map((v: any) => (v.address || '').toLowerCase()));
-  };
-
-  const addresses = [
-    ...collect(parsed.to),
-    ...collect(parsed.cc),
-    ...collect(parsed.bcc),
-  ];
-
-  const headerKeys = ['delivered-to', 'x-envelope-to', 'x-original-to', 'x-forwarded-to'];
-  for (const key of headerKeys) {
-    const raw = parsed.headers?.get?.(key);
-    if (raw) {
-      const val = Array.isArray(raw) ? raw.join(' ') : String(raw);
-      const headerAddresses = val.match(/[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+/gi) || [];
-      if (headerAddresses.some((address) => address.toLowerCase() === lowerTarget)) return true;
-    }
-  }
-
-  return addresses.some(addr => addr === lowerTarget);
-}
-
-function isAuthenticNetflix(parsed: any): boolean {
-  return isTrustedAuthenticNetflix(parsed);
+  const to = Array.isArray(parsed.to) ? parsed.to : [parsed.to];
+  return to.some(entry => entry?.value.some(value => value.address?.toLowerCase() === lowerTarget));
 }
 
 function extractNetflixCode(text: string, html: string, subject?: string): { code?: string; link?: string } {
@@ -1142,10 +1116,13 @@ const otpLimiter = rateLimit({
 });
 
 router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, res): Promise<any> => {
-  const { order_id, inventory_id } = req.body;
+  const { order_id, inventory_id, login_request_id } = req.body || {};
   if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id)) return res.status(400).json({ error: "Identifiant de commande invalide." });
   if (inventory_id !== undefined && (typeof inventory_id !== "string" || !/^[A-Za-z0-9-]{1,80}$/.test(inventory_id))) {
     return res.status(400).json({ error: "Identifiant de profil invalide." });
+  }
+  if (login_request_id !== undefined && (typeof login_request_id !== "string" || !INVENTORY_ID_RE.test(login_request_id))) {
+    return res.status(400).json({ error: "Identifiant de connexion invalide." });
   }
 
   const actor = await getAuthedOrderUser(req);
@@ -1176,6 +1153,26 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
 
   const netflixAccount = invItems.find((i: any) => i.service.toLowerCase().includes("netflix")) || invItems[0];
   if (!netflixAccount) return res.status(404).json({ error: "Pas de compte Netflix assigné" });
+  const targetEmail = String(netflixAccount.account_email || "").trim().toLowerCase();
+  if (!targetEmail) return res.status(503).json({ error: "Adresse Netflix momentanément indisponible." });
+
+  if (!login_request_id) {
+    const { data: login, error } = await supabaseAdmin.rpc("begin_netflix_login_request", {
+      p_mailbox_key: crypto.createHash("sha256").update(targetEmail).digest("hex"),
+      p_order_id: order_id,
+      p_inventory_id: netflixAccount.id,
+      p_customer_user_id: actor.id,
+    });
+    if (error) return res.status(503).json({ error: "La connexion Netflix est momentanément indisponible." });
+    if (!login) return res.status(409).json({ error: "Une connexion Netflix est déjà en cours. Réessaie dans quelques minutes." });
+    return res.status(202).json(login);
+  }
+
+  const { data: login, error: loginError } = await supabaseAdmin.from("netflix_login_requests")
+    .select("started_at").eq("request_id", login_request_id).eq("customer_user_id", actor.id)
+    .eq("order_id", order_id).eq("inventory_id", netflixAccount.id).gt("expires_at", new Date().toISOString()).maybeSingle();
+  if (loginError) return res.status(503).json({ error: "La connexion Netflix est momentanément indisponible." });
+  if (!login) return res.status(410).json({ code: "NETFLIX_LOGIN_EXPIRED", error: "La demande Netflix a expiré. Prépare une nouvelle connexion." });
 
   const strat = resolveImapStrategy(netflixAccount);
   if (!strat.user || !strat.pass) return res.status(400).json({ error: "Identifiants IMAP manquants dans l'inventaire" });
@@ -1209,8 +1206,7 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
       await client.connect();
       const lock = await client.getMailboxLock('INBOX');
       try {
-        const since = new Date(Date.now() - 15 * 60 * 1000);
-        const targetEmail = netflixAccount.account_email;
+        const since = new Date(login.started_at);
         let latest: { code?: string; link?: string; receivedAt: number; uid: number } | undefined;
         const maxMessagesPerAttempt = 20;
         const maxMessageBytes = 256 * 1024;
@@ -1234,9 +1230,9 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
             const receivedAt = message.internalDate ? new Date(message.internalDate).getTime() : NaN;
             if (!Number.isFinite(receivedAt) || receivedAt < since.getTime() || receivedAt > Date.now()) continue;
             if (message.envelope?.from?.some((f: any) => isNetflixSenderAddress(f.address))) {
-              const parsed = await simpleParser(message.source as any);
-              if (targetEmail && !recipientMatches(parsed, targetEmail)) continue;
-              if (!isAuthenticNetflix(parsed)) continue;
+              if (!message.source || !await isTrustedAuthenticNetflix(message.source).catch(() => false)) continue;
+              const parsed = await simpleParser(message.source);
+              if (!recipientMatches(parsed, targetEmail)) continue;
 
               const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '', parsed.subject);
               if ((code || link) && (!latest || receivedAt > latest.receivedAt ||
@@ -1251,6 +1247,12 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
         }
 
         if (latest) {
+          const { data: consumed, error } = await supabaseAdmin.rpc("finish_netflix_login_request", {
+            p_request_id: login_request_id,
+            p_user: actor.id,
+          });
+          if (error) return res.status(503).json({ error: "La connexion Netflix est momentanément indisponible." });
+          if (!consumed) return res.status(410).json({ code: "NETFLIX_LOGIN_EXPIRED", error: "La demande Netflix a expiré. Prépare une nouvelle connexion." });
           return res.json({ success: true, code: latest.code ?? null, link: latest.link ?? null });
         } else {
           return res.status(404).json({ error: "Aucun email Netflix récent trouvé. Assurez-vous d'avoir demandé le code sur Netflix puis réessayez dans quelques secondes." });

@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   extractNetflixCode,
   isAllowedNetflixHostname,
   isAuthenticNetflix,
   isNetflixSenderAddress,
 } from "../../src/lib/netflixValidation";
+
+const { verify } = vi.hoisted(() => ({ verify: vi.fn() }));
+vi.mock("mailauth/lib/dkim/verify.js", () => ({ dkimVerify: verify }));
 
 describe("validation des messages Netflix", () => {
   it("refuse les domaines qui contiennent seulement netflix.com", () => {
@@ -15,12 +18,22 @@ describe("validation des messages Netflix", () => {
     expect(isNetflixSenderAddress("alerts@mail.netflix.com")).toBe(true);
   });
 
-  it("exige un DKIM pass lié à un domaine Netflix", () => {
-    const parsed = (value: string) => ({ headers: { get: () => value } });
-    expect(isAuthenticNetflix(parsed("dkim=pass header.d=notnetflix.com"))).toBe(false);
-    expect(isAuthenticNetflix(parsed("dkim=pass header.d=netflix.com"))).toBe(true);
-    expect(isAuthenticNetflix(parsed("dkim=pass; spf=pass header.d=netflix.com"))).toBe(false);
-    expect(isAuthenticNetflix(parsed("mx.google.com; dkim=pass header.d=mailer.netflix.com; spf=pass"))).toBe(true);
+  it("exige une signature vérifiée qui couvre l’expéditeur, le destinataire, l’objet et le corps", async () => {
+    const fixture = Buffer.from("message fixture");
+    const result = {
+      signingDomain: "netflix.com",
+      status: { result: "pass" },
+      signingHeaders: { headers: ["From: sender@netflix.com", "To: fixture@example.invalid", "Subject: Login code"] },
+    };
+    const verifyWith = (results: object[]) => verify.mockResolvedValueOnce({
+      fromFields: 1, headerFrom: ["sender@netflix.com"], headers: { parsed: [{ key: "to" }, { key: "subject" }] }, results,
+    });
+    verifyWith([]);
+    expect(await isAuthenticNetflix(fixture)).toBe(false);
+    verifyWith([{ ...result, canonBodyLengthLimited: true }]);
+    expect(await isAuthenticNetflix(fixture)).toBe(false);
+    verifyWith([result]);
+    expect(await isAuthenticNetflix(fixture)).toBe(true);
   });
 
   it("ne retourne que les URL HTTPS d'un hôte Netflix autorisé", () => {
