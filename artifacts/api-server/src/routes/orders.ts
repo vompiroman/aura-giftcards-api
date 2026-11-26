@@ -29,6 +29,7 @@ import { appendAuditLog } from "../lib/auditLog";
 import { decryptInventorySecret, encryptInventorySecret } from "../lib/inventoryCredentials";
 import { isAllowedImapTarget, resolveImapStrategy } from "../lib/imapStrategy";
 import { buildAdminOrdersCsv } from "../lib/adminOrderExport";
+import { getAuthedOrderUser, sameOrderOwner } from "../lib/orderOwnership";
 import {
   extractNetflixCode as extractTrustedNetflixCode,
   isAuthenticNetflix as isTrustedAuthenticNetflix,
@@ -206,32 +207,18 @@ const credentialReadLimiter = rateLimit({
   message: { error: "Trop de consultations d'identifiants. Réessayez plus tard." },
 });
 
-async function getAuthedOrderUser(req: Request) {
-  const h = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
-  const token = /^Bearer\s+(.+)$/i.exec(h)?.[1]?.trim() || "";
-  if (!token) return null;
-
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data?.user?.email) return null;
-  return { id: data.user.id, email: data.user.email.trim().toLowerCase() };
-}
-
-async function getAuthedEmail(req: Request): Promise<string | null> {
-  return (await getAuthedOrderUser(req))?.email ?? null;
-}
-
 router.post("/create-order", createOrderLimiter, async (req, res) => {
   try {
     const actor = await getAuthedOrderUser(req);
-    const email = actor?.email;
-    if (!email) {
+    if (!actor) {
       res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
+    const { email } = actor;
 
     const wallet = req.body?.payment_method === "wallet";
     let approvedPartner = false;
-    if (PARTNER_ENABLED() && actor?.id) {
+    if (PARTNER_ENABLED()) {
       const {data,error} = await supabaseAdmin.from("partner_accounts").select("partner_status")
         .eq("user_id",actor.id).maybeSingle();
       if (error) { res.status(503).json({error:"Impossible de vérifier le compte partenaire."}); return; }
@@ -265,10 +252,10 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       }
       const { data: renewedOrder, error: renewedOrderError } = await supabaseAdmin
         .from("orders")
-        .select("order_id, assigned_email, payment_status, status, items, expires_at")
+        .select("order_id, customer_user_id, payment_status, status, items, expires_at")
         .eq("order_id", rawRenewalOrderId)
         .maybeSingle();
-      const sameOwner = String(renewedOrder?.assigned_email || "").trim().toLowerCase() === email;
+      const sameOwner = renewedOrder?.customer_user_id === actor.id;
       const requestedNetflixQuantity = netflixQuantity(pricing.cleanItems);
       const renewedNetflixQuantity = netflixQuantity(renewedOrder?.items);
       const offer = renewedOrder ? renewalOffer(renewedOrder) : null;
@@ -339,7 +326,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     const { count: pendingOrderCount, error: pendingCountError } = approvedPartner ? {count:null,error:null} : await supabaseAdmin
       .from("orders")
       .select("id", { count: "exact", head: true })
-      .eq("assigned_email", email)
+      .eq("customer_user_id", actor.id)
       .eq("status", "pending")
       .eq("payment_status", "unpaid");
     if (pendingCountError) {
@@ -404,6 +391,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     const draft = {
       order_id: orderId,
       assigned_email: email,
+      customer_user_id: actor.id,
       items: orderItems,
       amount: finalAmount,
       subtotal_amount: pricing.amount,
@@ -449,7 +437,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       if (wallet && order.payment_status === "paid" && order.order_status === "pending" && !order.replayed) {
         try {
           const result = await fulfillVerifiedPayment({
-            order_id:order.order_id,assigned_email:email,items:orderItems,amount:order.amount,
+            order_id:order.order_id,assigned_email:email,customer_user_id:actor.id,items:orderItems,amount:order.amount,
             status:"pending",payment_status:"paid",renewal_order_id:renewalOrderId,marketing_consent:marketingConsent,
           },"partner_wallet",{paymentTransitioned:true});
           Object.assign(order,result);
@@ -488,8 +476,8 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
 
 router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
   try {
-    const email = await getAuthedEmail(req);
-    if (!email) {
+    const actor = await getAuthedOrderUser(req);
+    if (!actor) {
       res.status(401).json({ error: "Token invalide ou expiré." });
       return;
     }
@@ -497,7 +485,7 @@ router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
     const { data: orders, error } = await supabaseAdmin
       .from("orders")
       .select("id, order_id, assigned_email, amount, status, payment_status, items, created_at, expires_at, activated_at")
-      .eq("assigned_email", email)
+      .eq("customer_user_id", actor.id)
       .eq("payment_status", "paid")
       .in("status", ["pending", "active", "completed"])
       .order("created_at", { ascending: false });
@@ -564,7 +552,8 @@ router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
 
 router.get("/validate-order", orderReadLimiter, async (req, res): Promise<any> => {
   try {
-    const email = await getAuthedEmail(req);
+    const actor = await getAuthedOrderUser(req);
+    if (!actor) return res.status(401).json({ error: "Token invalide ou expiré." });
     const orderId = String(req.query.id || "");
     if (!/^ORD-[A-Za-z0-9-]{6,40}$/.test(orderId)) {
       return res.status(400).json({ error: "Identifiant de commande invalide." });
@@ -572,7 +561,7 @@ router.get("/validate-order", orderReadLimiter, async (req, res): Promise<any> =
 
     const { data: order, error: fetchError } = await supabaseAdmin
       .from("orders")
-      .select("order_id, status, payment_status, assigned_email, expires_at, amount, items")
+      .select("order_id, status, payment_status, customer_user_id, expires_at, amount, items")
       .eq("order_id", orderId)
       .single();
 
@@ -580,7 +569,7 @@ router.get("/validate-order", orderReadLimiter, async (req, res): Promise<any> =
       return res.status(404).json({ error: "Commande introuvable." });
     }
 
-    if (!email || order.assigned_email?.toLowerCase() !== email.toLowerCase()) {
+    if (order.customer_user_id !== actor.id) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
@@ -947,8 +936,8 @@ router.post("/admin/update-order-status", requireAdmin, async (req: AuthedReques
 // GET user credentials from inventory
 router.get("/my-credentials", credentialReadLimiter, async (req, res): Promise<void> => {
   try {
-    const email = await getAuthedEmail(req);
-    if (!email) {
+    const actor = await getAuthedOrderUser(req);
+    if (!actor) {
       res.status(401).json({ error: "Token invalide." });
       return;
     }
@@ -956,7 +945,7 @@ router.get("/my-credentials", credentialReadLimiter, async (req, res): Promise<v
     const { data: userOrders, error: ordersError } = await supabaseAdmin
       .from("orders")
       .select("order_id")
-      .eq("assigned_email", email)
+      .eq("customer_user_id", actor.id)
       .eq("status", "active")
       .eq("payment_status", "paid")
       .gt("expires_at", new Date().toISOString());
@@ -1006,12 +995,8 @@ router.get("/my-credentials", credentialReadLimiter, async (req, res): Promise<v
 // POST client credentials into order.items
 router.post("/client-credentials", credentialLimiter, async (req, res): Promise<any> => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !/^Bearer\s+/i.test(authHeader)) return res.status(401).json({ error: "Token manquant" });
-    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
+    const actor = await getAuthedOrderUser(req);
+    if (!actor) return res.status(401).json({ error: "Token invalide." });
 
     const { order_id, service, email, password, whatsapp } = req.body;
     const normalizedService = typeof service === "string" ? service.trim().toLowerCase() : "";
@@ -1022,9 +1007,9 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       return res.status(400).json({ error: "Données manquantes" });
     }
 
-    const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("order_id, assigned_email, status, payment_status, items, activation_revision").eq("order_id", order_id).single();
+    const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("order_id, customer_user_id, status, payment_status, items, activation_revision").eq("order_id", order_id).single();
     if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
-    if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
+    if (order.customer_user_id !== actor.id) return res.status(403).json({ error: "Accès refusé" });
     if (order.payment_status !== "paid" || order.status !== "pending") return res.status(409).json({ error: "Cette activation n'est plus modifiable." });
 
     // Update items with credentials
@@ -1047,7 +1032,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     const { data: updated, error: updateError } = await supabaseAdmin.from("orders")
       .update({ items: updatedItems, customer_whatsapp: normalizedWhatsapp })
       .eq("order_id", order_id)
-      .eq("assigned_email", userData.user.email)
+      .eq("customer_user_id", actor.id)
       .eq("payment_status", "paid")
       .eq("status", "pending")
       .eq("activation_revision", order.activation_revision)
@@ -1071,7 +1056,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       const { data: recorded } = await supabaseAdmin.from("orders")
         .update({ items: notifiedItems })
         .eq("order_id", order_id)
-        .eq("assigned_email", userData.user.email)
+        .eq("customer_user_id", actor.id)
         .eq("payment_status", "paid")
         .eq("status", "pending")
         .eq("activation_revision", updated[0].activation_revision)
@@ -1092,7 +1077,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
     }
     void appendAuditLog({
       action: "client_activation_credentials_submitted",
-      actorUserId: userData.user.id,
+      actorUserId: actor.id,
       targetType: "order",
       targetId: order_id,
       details: {
@@ -1163,15 +1148,12 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
     return res.status(400).json({ error: "Identifiant de profil invalide." });
   }
 
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !/^Bearer\s+/i.test(authHeader)) return res.status(401).json({ error: "Token manquant" });
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-  const { data: userData, error: userError } = await supabase.auth.getUser(token);
-  if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
+  const actor = await getAuthedOrderUser(req);
+  if (!actor) return res.status(401).json({ error: "Token invalide." });
 
-  const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("order_id, assigned_email, status, payment_status, expires_at, items").eq("order_id", order_id).single();
+  const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("order_id, customer_user_id, status, payment_status, expires_at, items").eq("order_id", order_id).single();
   if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
-  if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) {
+  if (order.customer_user_id !== actor.id) {
     return res.status(404).json({ error: "Commande introuvable" });
   }
 
@@ -1518,7 +1500,7 @@ router.post("/admin/inventory/:id/assign", requireAdmin, async (req: AuthedReque
   try {
     const { data: order, error: orderError } = await supabaseAdmin
       .from("orders")
-      .select("order_id, assigned_email, status, payment_status, items, renewal_order_id")
+      .select("order_id, customer_user_id, status, payment_status, items, renewal_order_id")
       .eq("order_id", orderId)
       .maybeSingle();
     if (orderError) throw orderError;
@@ -1534,15 +1516,13 @@ router.post("/admin/inventory/:id/assign", requireAdmin, async (req: AuthedReque
     if (order.renewal_order_id) {
       const { data: sourceOrder, error: sourceError } = await supabaseAdmin
         .from("orders")
-        .select("assigned_email, payment_status, status, expires_at")
+        .select("customer_user_id, payment_status, status, expires_at")
         .eq("order_id", order.renewal_order_id)
         .maybeSingle();
-      const sameOwner = String(sourceOrder?.assigned_email || "").trim().toLowerCase()
-        === String(order.assigned_email || "").trim().toLowerCase();
       if (
         sourceError
         || !sourceOrder
-        || !sameOwner
+        || !sameOrderOwner(order, sourceOrder)
         || sourceOrder.payment_status !== "paid"
         || !["active", "completed"].includes(String(sourceOrder.status))
       ) {

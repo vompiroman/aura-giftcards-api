@@ -54,7 +54,7 @@ describe("notifications administrateur", () => {
     notifyAdminMock.mockResolvedValue(true);
     notifyOperationsMock.mockResolvedValue(true);
     getUserMock.mockResolvedValue({
-      data: { user: { email: "client@example.com" } },
+      data: { user: { id: "client-test-id", email: "client@example.com" } },
       error: null,
     });
   });
@@ -71,6 +71,7 @@ describe("notifications administrateur", () => {
       .mockReturnValueOnce(selectSingleStub({
         order_id: "ORD-spotify-1",
         assigned_email: "client@example.com",
+        customer_user_id: "client-test-id",
         status: "pending",
         payment_status: "paid",
         activation_revision: 7,
@@ -111,6 +112,7 @@ describe("notifications administrateur", () => {
       .mockReturnValueOnce(selectSingleStub({
         order_id: "ORD-spotify-queued",
         assigned_email: "client@example.com",
+        customer_user_id: "client-test-id",
         status: "pending",
         payment_status: "paid",
         items: [{ name: "Spotify Family 1 mois" }],

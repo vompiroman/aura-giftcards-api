@@ -43,6 +43,7 @@ function renewedOrderQuery() {
     data: {
       order_id: "ORD-original",
       assigned_email: "client@example.com",
+      customer_user_id: "user-123",
       payment_status: "paid",
       status: "active",
       expires_at: "2026-10-01T12:00:00.000Z",
@@ -77,6 +78,7 @@ describe("Netflix renewal fulfillment", () => {
     const result = await fulfillVerifiedPayment({
       order_id: "ORD-renewal",
       assigned_email: "client@example.com",
+      customer_user_id: "user-123",
       amount: 600,
       status: "pending",
       payment_status: "paid",
@@ -101,6 +103,7 @@ describe("Netflix renewal fulfillment", () => {
       data: {
         order_id: "ORD-original",
         assigned_email: "other@example.com",
+        customer_user_id: "other-user",
         payment_status: "paid",
         status: "active",
         expires_at: "2026-10-01T12:00:00.000Z",
@@ -112,6 +115,7 @@ describe("Netflix renewal fulfillment", () => {
     await expect(fulfillVerifiedPayment({
       order_id: "ORD-renewal",
       assigned_email: "client@example.com",
+      customer_user_id: "user-123",
       amount: 600,
       status: "pending",
       payment_status: "paid",

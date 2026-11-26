@@ -205,6 +205,7 @@ describe("POST /api/create-order", () => {
       .mockReturnValueOnce(renewalOrderSelectStub({
         order_id: "ORD-renew-source",
         assigned_email: "e2e-tester@exemple.com",
+        customer_user_id: "user-123",
         payment_status: "paid",
         status: "active",
         expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
@@ -238,6 +239,7 @@ describe("POST /api/create-order", () => {
       .mockReturnValueOnce(renewalOrderSelectStub({
         order_id: "ORD-spotify-source",
         assigned_email: "e2e-tester@exemple.com",
+        customer_user_id: "user-123",
         payment_status: "paid",
         status: "active",
         expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
@@ -272,6 +274,7 @@ describe("POST /api/create-order", () => {
     fromMock.mockReturnValueOnce(renewalOrderSelectStub({
       order_id: "ORD-renew-source",
       assigned_email: "other@example.com",
+      customer_user_id: "other-user",
       payment_status: "paid",
       status: "active",
       expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
@@ -404,6 +407,7 @@ describe("POST /api/create-order", () => {
     fromMock.mockReturnValue(orderSelectStub({
       order_id: "ORD-owner-123",
       assigned_email: "e2e-tester@exemple.com",
+      customer_user_id: "user-123",
       status: "pending",
       payment_status: "paid",
       expires_at: null,
@@ -431,6 +435,7 @@ describe("POST /api/create-order", () => {
     fromMock.mockReturnValue(orderSelectStub({
       order_id: "ORD-other-123",
       assigned_email: "other@example.com",
+      customer_user_id: "other-user",
       status: "pending",
       payment_status: "paid",
       expires_at: null,
