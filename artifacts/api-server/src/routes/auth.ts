@@ -20,6 +20,7 @@ import {
 import { normalizeAlgerianMobile } from "../lib/phone";
 import { getPurchaseEmailConfig, sendPasswordRecoveryEmail } from "../lib/purchaseEmail";
 import { issuePasswordRecoveryToken, readPasswordRecoveryToken } from "../lib/passwordRecoveryToken";
+import { compromisedPasswordMessage, isKnownCompromisedPassword } from "../lib/compromisedPassword";
 import { PARTNER_ENABLED, AUTO_APPROVE_PARTNERS } from "../config/partnerTiers";
 import { partnerQuestionnaire } from "./partners";
 
@@ -139,6 +140,10 @@ router.post("/register", registrationLimiter, async (req, res) => {
       return;
     }
 
+    if (await isKnownCompromisedPassword(password)) {
+      res.status(400).json({ error: compromisedPasswordMessage, code: "PASSWORD_COMPROMISED" });
+      return;
+    }
     const { data, error } = await supabase.auth.signUp({
       email: normalizedEmail,
       password,
@@ -314,6 +319,10 @@ router.post("/update-profile", profileLimiter, async (req, res) => {
         return;
       }
       
+      if (await isKnownCompromisedPassword(password)) {
+        res.status(400).json({ error: compromisedPasswordMessage, code: "PASSWORD_COMPROMISED" });
+        return;
+      }
       updates.password = password;
     }
     
@@ -415,6 +424,10 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
     const tokenHash = legacyToken === undefined ? readPasswordRecoveryToken(recoveryToken) : null;
     if (!tokenHash) {
       invalidRecoveryLink();
+      return;
+    }
+    if (await isKnownCompromisedPassword(password)) {
+      res.status(400).json({ error: compromisedPasswordMessage, code: "PASSWORD_COMPROMISED" });
       return;
     }
 

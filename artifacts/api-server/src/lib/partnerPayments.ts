@@ -16,7 +16,8 @@ export async function createDeposit(userId: string, email: string, key: string, 
     if (saveError || !data) throw new Error("WALLET_INVOICE_SAVE_FAILED");
     return { id:tx.id, status:"PENDING", payment_url:invoice.url };
   } catch (error) {
-    await db.from("wallet_transactions").update({status:"FAILED"}).eq("id",tx.id).is("provider_invoice_id",null);
+    await db.from("wallet_transactions").update({status:"FAILED"}).eq("id",tx.id).eq("user_id",userId)
+      .eq("status","PENDING").is("provider_invoice_id",null);
     throw error;
   }
 }
@@ -33,6 +34,8 @@ export async function observeDeposit(tx: { id:string; status:string; provider_in
 }
 
 export async function reconcilePartnerDeposits() {
+  const { error: expireError } = await db.rpc("expire_stalled_wallet_deposits");
+  if (expireError) throw expireError;
   const { data, error } = await db.from("wallet_transactions").select("id,status,provider_invoice_id")
     .eq("kind","DEPOSIT").neq("status","CONFIRMED").not("provider_invoice_id","is",null)
     .gt("created_at",new Date(Date.now()-30*86400_000).toISOString())
