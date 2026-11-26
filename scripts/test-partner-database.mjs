@@ -19,6 +19,17 @@ try {
   await db.exec(await file("../supabase/migrations/20261114193941_partner_program.sql"));
   await db.exec(await file("../supabase/migrations/20261115154539_partner_operations.sql"));
   await db.exec(await file("../supabase/migrations/20261115162323_partner_toolkit.sql"));
+  await db.exec(await file("../supabase/migrations/20261126190000_allow_encrypted_inventory_pins.sql"));
+  await db.exec(await file("../supabase/migrations/20261126190500_order_activation_revision.sql"));
+  await q("insert into public.inventory(profile_pin) values ('0123'), ('enc:v1:{\"ciphertext\":\"test\"}')");
+  await assert.rejects(() => q("insert into public.inventory(profile_pin) values ('invalid')"), /inventory_profile_pin_check/);
+  await q("insert into public.orders(order_id,amount,status,payment_status,items) values ('ORD-revision',100,'pending','paid','[]')");
+  assert.equal(await scalar("update public.orders set customer_whatsapp='test' where order_id='ORD-revision' returning activation_revision"),0);
+  assert.equal(await scalar("update public.orders set items='[{\"name\":\"Spotify\"}]' where order_id='ORD-revision' and activation_revision=0 returning activation_revision"),1);
+  assert.deepEqual(await q("update public.orders set items='[]' where order_id='ORD-revision' and activation_revision=0 returning activation_revision"),[]);
+  assert.equal(await scalar("update public.orders set status='active' where order_id='ORD-revision' returning activation_revision"),2);
+  await q("delete from public.orders where order_id='ORD-revision'");
+  await q("delete from public.inventory where profile_pin is not null");
   await q("insert into auth.users values($1),($2),($3)",[u,admin,other]);
   for (const role of ["anon","authenticated"]) {
     assert.equal(await scalar("select has_table_privilege($1,'public.wallet_transactions','select')",[role]),false);

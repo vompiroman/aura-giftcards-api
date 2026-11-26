@@ -14,7 +14,7 @@ const testAlertLimiter = rateLimit({
   message: { error: "Trop de tests d'alerte, patientez une minute." },
 });
 
-router.get("/admin/test-alert", testAlertLimiter, requireAdmin, async (req: AuthedRequest, res) => {
+router.post("/admin/test-alert", testAlertLimiter, requireAdmin, async (req: AuthedRequest, res) => {
   const sent = await notifyAdmin(
     `Test d'alerte déclenché par ${req.adminEmail}. Si tu vois cette notification sur ton téléphone, la chaîne d'alerte fonctionne. ✅`,
     {

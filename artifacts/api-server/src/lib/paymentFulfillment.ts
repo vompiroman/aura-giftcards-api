@@ -79,9 +79,8 @@ export async function fulfillVerifiedPayment(
     }
   }
 
-  // Les identifiants sont collectés avant l'ouverture de SlickPay, mais ne
-  // quittent le stockage chiffré qu'après une confirmation de paiement fiable.
-  // Le cron de rattrapage renverra la notification si Discord est indisponible.
+  // Notify operations only once the payment has been confirmed. Credentials
+  // stay in the encrypted order and the retry job handles delivery failures.
   void deliverActivationNotificationsForOrder(order.order_id, order.items).catch((error) => {
     console.warn("[activation] Immediate credential delivery failed.", { errorName: error?.name });
   });

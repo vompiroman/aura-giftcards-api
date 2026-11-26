@@ -537,7 +537,7 @@ router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {
             id: String(acc.id),
             email: acc.account_email,
             profile_name: acc.profile_name ?? null,
-            profile_pin: acc.profile_pin ?? null,
+            profile_pin: decryptInventorySecret(acc.profile_pin),
             service: acc.service,
           }))
         : [];
@@ -904,7 +904,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
 
     let { data: currentOrder, error: currentOrderError } = await supabaseAdmin
       .from("orders")
-      .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, expires_at, activated_at, marketing_consent, meta_purchase_sent_at")
+      .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, expires_at, activated_at, marketing_consent, meta_purchase_sent_at, activation_revision")
       .eq("order_id", order_id)
       .single();
     if (currentOrderError || !currentOrder) return res.status(404).json({ error: "Commande introuvable." });
@@ -948,15 +948,18 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
     }
     if (status === "completed") update.completed_at = new Date().toISOString();
     if (status === "cancelled" && currentOrder.payment_status !== "paid") update.payment_status = "failed";
-    const { error: updateError } = await supabaseAdmin
+    const { data: changedOrder, error: updateError } = await supabaseAdmin
       .from("orders")
       .update(update)
-      .eq("order_id", order_id);
+      .eq("order_id", order_id)
+      .eq("activation_revision", currentOrder.activation_revision)
+      .select("order_id");
 
     if (updateError) {
       req.log.error({ updateError }, "Supabase error updating order status");
       return res.status(500).json({ error: "Erreur lors de la mise à jour." });
     }
+    if (!changedOrder?.length) return res.status(409).json({ error: "La commande a changé. Actualise la page et réessaie." });
 
     void appendAuditLog({
       action: "admin_order_status_update",
@@ -1018,7 +1021,7 @@ router.get("/my-credentials", credentialReadLimiter, async (req, res): Promise<v
         account_password: isNetflix ? null : decryptInventorySecret(c.account_password),
         service: c.service,
         profile_name: c.profile_name ?? null,
-        profile_pin: c.profile_pin ?? null,
+        profile_pin: decryptInventorySecret(c.profile_pin),
       };
     });
 
@@ -1050,7 +1053,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       return res.status(400).json({ error: "Données manquantes" });
     }
 
-    const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("order_id, assigned_email, status, payment_status, items").eq("order_id", order_id).single();
+    const { data: order, error: orderError } = await supabaseAdmin.from("orders").select("order_id, assigned_email, status, payment_status, items, activation_revision").eq("order_id", order_id).single();
     if (orderError || !order) return res.status(404).json({ error: "Commande introuvable" });
     if (order.assigned_email?.toLowerCase() !== userData.user.email.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
     if (order.payment_status !== "paid" || order.status !== "pending") return res.status(409).json({ error: "Cette activation n'est plus modifiable." });
@@ -1078,22 +1081,18 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
       .eq("assigned_email", userData.user.email)
       .eq("payment_status", "paid")
       .eq("status", "pending")
-      .select("order_id");
+      .eq("activation_revision", order.activation_revision)
+      .select("activation_revision");
     if (updateError) throw updateError;
     if (!updated?.length) return res.status(409).json({ error: "La commande n'est plus modifiable." });
 
-    const frontendUrl = (process.env.FRONTEND_URL || "https://aura-stream.netlify.app").replace(/\/$/, "");
+    const frontendUrl = (process.env.FRONTEND_URL || "https://www.aura-stream.com").replace(/\/$/, "");
     const validationLink = `${frontendUrl}/?admin=true`;
     const discordSent = await notifyOperations(
-      `Nouveau compte ${normalizedService} à activer. Les identifiants temporaires sont disponibles dans ce canal opérationnel privé et dans le panneau sécurisé : ${validationLink}`,
+      `Nouveau compte ${normalizedService} à activer. Ouvre le panneau administrateur : ${validationLink}`,
       {
         orderId: order_id,
         service: normalizedService,
-        credentials: {
-          email: normalizedEmail,
-          password: normalizedPassword,
-          whatsapp: normalizedWhatsapp,
-        },
       },
     );
 
@@ -1106,6 +1105,7 @@ router.post("/client-credentials", credentialLimiter, async (req, res): Promise<
         .eq("assigned_email", userData.user.email)
         .eq("payment_status", "paid")
         .eq("status", "pending")
+        .eq("activation_revision", updated[0].activation_revision)
         .select("order_id");
       notificationRecorded = Boolean(recorded?.length);
     }
@@ -1260,10 +1260,7 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
       try {
         const since = new Date(Date.now() - 15 * 60 * 1000);
         const targetEmail = netflixAccount.account_email;
-        let bestCode = null;
-        let bestLink = null;
-        let bestTime = 0;
-        let bestUid = 0;
+        let latest: { code?: string; link?: string; receivedAt: number; uid: number } | undefined;
         const maxMessagesPerAttempt = 20;
         const maxMessageBytes = 256 * 1024;
 
@@ -1278,35 +1275,32 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
           }
           for await (let message of client.fetch(
             newestUids,
-            { uid: true, envelope: true, size: true, source: { maxLength: maxMessageBytes } },
+            { uid: true, envelope: true, internalDate: true, size: true, source: { maxLength: maxMessageBytes } },
             { uid: true },
           )) {
             if (typeof message.size === "number" && message.size > maxMessageBytes) continue;
+            // IMAP SINCE filters by calendar day, so enforce the full timestamp here.
+            const receivedAt = message.internalDate ? new Date(message.internalDate).getTime() : NaN;
+            if (!Number.isFinite(receivedAt) || receivedAt < since.getTime() || receivedAt > Date.now()) continue;
             if (message.envelope?.from?.some((f: any) => isNetflixSenderAddress(f.address))) {
               const parsed = await simpleParser(message.source as any);
               if (targetEmail && !recipientMatches(parsed, targetEmail)) continue;
               if (!isAuthenticNetflix(parsed)) continue;
 
               const { code, link } = extractNetflixCode(parsed.text || '', (parsed as any).html || '', parsed.subject);
-              if (code || link) {
-                const msgTime = message.envelope?.date ? new Date(message.envelope.date).getTime() : Date.now();
-                const msgUid = message.uid || 0;
-                if (msgTime > bestTime || (msgTime === bestTime && msgUid >= bestUid)) {
-                  bestTime = msgTime;
-                  bestUid = msgUid;
-                  if (code) bestCode = code;
-                  if (link) bestLink = link;
-                }
+              if ((code || link) && (!latest || receivedAt > latest.receivedAt ||
+                (receivedAt === latest.receivedAt && message.uid > latest.uid))) {
+                latest = { code, link, receivedAt, uid: message.uid };
               }
             }
           }
 
-          if (bestCode || bestLink) break;
+          if (latest) break;
           if (attempt < 3) await new Promise(r => setTimeout(r, 2500));
         }
 
-        if (bestCode || bestLink) {
-          return res.json({ success: true, code: bestCode, link: bestLink });
+        if (latest) {
+          return res.json({ success: true, code: latest.code ?? null, link: latest.link ?? null });
         } else {
           return res.status(404).json({ error: "Aucun email Netflix récent trouvé. Assurez-vous d'avoir demandé le code sur Netflix puis réessayez dans quelques secondes." });
         }
@@ -1383,7 +1377,7 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
           assigned_at: item.assigned_at,
           created_at: item.created_at,
           profile_name: item.profile_name,
-          profile_pin: item.profile_pin,
+          profile_pin: decryptInventorySecret(item.profile_pin),
           has_account_password: Boolean(item.account_password),
           has_imap_password: Boolean(item.imap_password),
           order_status: assignedOrder?.status || null,
@@ -1450,7 +1444,7 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
         imap_user: imap.imap_user,
         imap_password: encryptInventorySecret(imap.imap_password),
         profile_name: inventoryProfileName(entry.profile_name),
-        profile_pin: inventoryProfilePinRequired(entry.profile_pin),
+        profile_pin: encryptInventorySecret(inventoryProfilePinRequired(entry.profile_pin)),
         is_used: false,
       };
     });
@@ -1783,7 +1777,7 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
       updates.account_password = encryptInventorySecret(inventoryPassword(account_password, true));
     }
     if (profile_name !== undefined) updates.profile_name = inventoryProfileName(profile_name);
-    if (profile_pin !== undefined) updates.profile_pin = inventoryProfilePinRequired(profile_pin);
+    if (profile_pin !== undefined) updates.profile_pin = encryptInventorySecret(inventoryProfilePinRequired(profile_pin));
 
     if (imap_password !== undefined) {
       const imap = inventoryImapSettings(req.body, normalizedEmail);
@@ -1933,15 +1927,10 @@ router.post("/cron/verify-integrations", async (req, res): Promise<any> => {
   try {
     await checkMailboxHealth();
     const discordOk = await notifyOperations(
-      "Test technique Aura Stream : la boîte OTP Netflix et le canal d'activation Spotify/Crunchyroll sont opérationnels. Aucun identifiant client réel n'est inclus dans ce test.",
+      "Test technique Aura Stream : la boîte OTP Netflix et le canal d’activation sont opérationnels.",
       {
         orderId: `TEST-${Date.now()}`,
         service: "spotify",
-        credentials: {
-          email: "test-activation@aura-stream.com",
-          password: "TEST-NE-PAS-UTILISER",
-          whatsapp: "+213500000000",
-        },
       },
     );
     if (!discordOk) return res.status(502).json({ ok: false, mailbox: true, discord_operations: false });

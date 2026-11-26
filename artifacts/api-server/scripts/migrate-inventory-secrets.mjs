@@ -88,7 +88,7 @@ async function migrateTable(table, select, fields) {
 }
 
 const results = await Promise.all([
-  migrateTable("inventory", "id,account_password,imap_password", ["account_password", "imap_password"]),
+  migrateTable("inventory", "id,account_password,imap_password,profile_pin", ["account_password", "imap_password", "profile_pin"]),
   migrateTable("email_accounts", "id,imap_password", ["imap_password"]),
 ]);
 console.log(JSON.stringify({ completed: true, results }));

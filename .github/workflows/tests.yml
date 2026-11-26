@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      require_e2e:
+        description: Require the isolated payment test environment
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -37,6 +42,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level high
       - run: pnpm --filter @workspace/api-server test:integration
       - name: Verify partner transactions in PostgreSQL
         run: |
@@ -47,6 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: integration
     env:
+      REQUIRE_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.require_e2e }}
       API_BASE: ${{ secrets.E2E_API_BASE }}
       SUPABASE_URL: ${{ secrets.E2E_SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.E2E_SUPABASE_ANON_KEY }}
@@ -71,7 +78,13 @@ jobs:
 
           if [ "${#missing[@]}" -gt 0 ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::E2E skipped: configure dedicated staging secrets (${missing[*]})."
+            echo "### Payment E2E tests were skipped because the staging environment is incomplete" >> "$GITHUB_STEP_SUMMARY"
+            echo "Missing configuration names: ${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$REQUIRE_E2E" = "true" ]; then
+              echo "::error::The required payment E2E environment is incomplete."
+              exit 1
+            fi
+            echo "::warning::Payment E2E tests did not run."
           else
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi

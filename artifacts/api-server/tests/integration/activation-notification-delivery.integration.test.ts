@@ -17,7 +17,7 @@ function pendingOrdersQuery(items: any[]) {
   const builder: Record<string, any> = {};
   for (const method of ["select", "eq", "order"]) builder[method] = vi.fn(() => builder);
   builder.limit = vi.fn(async () => ({
-    data: [{ order_id: "ORD-retry-spotify", items }],
+    data: [{ order_id: "ORD-retry-spotify", items, activation_revision: 3 }],
     error: null,
   }));
   return builder;
@@ -44,16 +44,17 @@ describe("rattrapage des notifications d'activation", () => {
     delete process.env.CLIENT_CREDENTIALS_KEY;
   });
 
-  it("renvoie les identifiants chiffrés à Discord puis marque la livraison", async () => {
+  it("envoie uniquement la référence d’activation et conserve les identifiants chiffrés", async () => {
     const items = setClientCredentials(
       [{ name: "Spotify Family 1 mois" }],
       "spotify",
       { email: "spotify@example.com", password: "temporary", whatsapp: "+213555000000" },
     );
     const updates: any[] = [];
+    const write = updateQuery(updates);
     fromMock
       .mockReturnValueOnce(pendingOrdersQuery(items))
-      .mockReturnValueOnce(updateQuery(updates));
+      .mockReturnValueOnce(write);
     notifyOperationsMock.mockResolvedValue(true);
 
     await expect(deliverPendingActivationNotifications()).resolves.toEqual({
@@ -64,29 +65,28 @@ describe("rattrapage des notifications d'activation", () => {
     });
     expect(notifyOperationsMock).toHaveBeenCalledWith(
       expect.stringContaining("Nouveau compte spotify payé"),
-      expect.objectContaining({
+      {
         orderId: "ORD-retry-spotify",
         service: "spotify",
-        credentials: {
-          email: "spotify@example.com",
-          password: "temporary",
-          whatsapp: "+213555000000",
-        },
-      }),
+      },
     );
     expect(adminOrderItems(updates[0].items)[0]).toMatchObject({
       client_credentials_notification_sent_at: expect.any(String),
       client_credentials: { email: "spotify@example.com" },
     });
+    expect(write.eq).toHaveBeenCalledWith("activation_revision", 3);
   });
 
-  it("transmet le pseudo Snapchat payé et marque la notification", async () => {
+  it("notifie l’activation Snapchat sans transmettre le pseudo", async () => {
     const items=[{ name: "Snapchat+ 6 mois", snapchat_username: "client.snap", snapchat_friend_added: true }];
     const updates: any[]=[];
     fromMock.mockReturnValueOnce(pendingOrdersQuery(items)).mockReturnValueOnce(updateQuery(updates));
     notifyOperationsMock.mockResolvedValue(true);
     expect((await deliverPendingActivationNotifications()).sent).toBe(1);
-    expect(notifyOperationsMock).toHaveBeenCalledWith(expect.stringContaining("Snapchat+ payée"),expect.objectContaining({snapchatUsername:"client.snap"}));
+    expect(notifyOperationsMock).toHaveBeenCalledWith(expect.stringContaining("Snapchat+ payée"),{
+      orderId: "ORD-retry-spotify",
+      service: "snapchat",
+    });
     expect(updates[0].items[0].client_credentials_notification_sent_at).toEqual(expect.any(String));
   });
 
