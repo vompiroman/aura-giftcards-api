@@ -89,7 +89,12 @@ export function setClientCredentials(
   const encrypted = encryptCredentials(credentials);
   return parseOrderItems(itemsValue).map((item) => {
     if (typeof item?.name === "string" && item.name.toLowerCase().includes(service)) {
-      const { client_credentials: _legacy, client_credentials_encrypted: _old, ...safeItem } = item;
+      const {
+        client_credentials: _legacy,
+        client_credentials_encrypted: _old,
+        client_credentials_notification_sent_at: _notified,
+        ...safeItem
+      } = item;
       return {
         ...safeItem,
         client_credentials_encrypted: encrypted,

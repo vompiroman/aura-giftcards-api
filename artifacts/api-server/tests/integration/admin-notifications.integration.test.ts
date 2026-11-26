@@ -33,7 +33,7 @@ function updateStub() {
   builder.update = vi.fn(() => builder);
   builder.eq = vi.fn(() => builder);
   builder.neq = vi.fn(() => builder);
-  builder.select = vi.fn(async () => ({ data: [{ order_id: "ORD-spotify-1" }], error: null }));
+  builder.select = vi.fn(async () => ({ data: [{ order_id: "ORD-spotify-1", activation_revision: 8 }], error: null }));
   return builder;
 }
 
@@ -65,16 +65,19 @@ describe("notifications administrateur", () => {
   });
 
   it("envoie les demandes Spotify via le webhook opérationnel", async () => {
+    const submit = updateStub();
+    const markSent = updateStub();
     fromMock
       .mockReturnValueOnce(selectSingleStub({
         order_id: "ORD-spotify-1",
         assigned_email: "client@example.com",
         status: "pending",
         payment_status: "paid",
+        activation_revision: 7,
         items: [{ name: "Spotify 1 mois" }],
       }))
-      .mockReturnValueOnce(updateStub())
-      .mockReturnValueOnce(updateStub());
+      .mockReturnValueOnce(submit)
+      .mockReturnValueOnce(markSent);
 
     const res = await request(app)
       .post("/api/client-credentials")
@@ -88,21 +91,13 @@ describe("notifications administrateur", () => {
       });
 
     expect(res.status).toBe(200);
+    expect(submit.eq).toHaveBeenCalledWith("activation_revision", 7);
+    expect(markSent.eq).toHaveBeenCalledWith("activation_revision", 8);
     expect(notifyOperationsMock).toHaveBeenCalledWith(
       expect.stringContaining("à activer"),
-      expect.objectContaining({ orderId: "ORD-spotify-1", service: "spotify" }),
+      { orderId: "ORD-spotify-1", service: "spotify" },
     );
     expect(notifyAdminMock).not.toHaveBeenCalled();
-    expect(notifyOperationsMock).toHaveBeenCalledWith(
-      expect.stringContaining("panneau sécurisé"),
-      expect.objectContaining({
-        credentials: {
-          email: "spotify@example.com",
-          password: "secret",
-          whatsapp: "+213555000000",
-        },
-      }),
-    );
     expect(res.body).toMatchObject({
       success: true,
       notification_sent: true,

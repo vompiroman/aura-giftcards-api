@@ -13,10 +13,10 @@ describe("webhook Discord opérationnel", () => {
     delete process.env.DISCORD_ADMIN_WEBHOOK_URL;
   });
 
-  it("transmet les identifiants temporaires au canal opérationnel privé", async () => {
+  it("limite le message opérationnel à la commande et au service", async () => {
     process.env.DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/123456789012345678/operations-test-token";
     process.env.DISCORD_ADMIN_WEBHOOK_URL = "https://discord.com/api/webhooks/123456789012345679/admin-test-token";
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 204 }));
+    const fetchMock = vi.fn(async (_url: string, _request: RequestInit) => ({ ok: true, status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(notifyOperations(
@@ -24,11 +24,6 @@ describe("webhook Discord opérationnel", () => {
       {
         orderId: "ORD-123456",
         service: "spotify",
-        credentials: {
-          email: "secret@example.com",
-          password: "temporary-password",
-          whatsapp: "+213555000000",
-        },
       },
     )).resolves.toBe(true);
 
@@ -36,10 +31,11 @@ describe("webhook Discord opérationnel", () => {
       "https://discord.com/api/webhooks/123456789012345678/operations-test-token?wait=true",
       expect.objectContaining({ method: "POST", redirect: "error" }),
     );
-    const payload = JSON.stringify(fetchMock.mock.calls[0][1]);
-    expect(payload).toContain("secret@example.com");
-    expect(payload).toContain("||temporary-password||");
-    expect(payload).toContain("+213555000000");
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(payload.embeds[0].fields).toEqual([
+      { name: "Commande", value: "ORD-123456", inline: true },
+      { name: "Service", value: "spotify", inline: true },
+    ]);
   });
 
   it("retente les erreurs Discord transitoires", async () => {
@@ -57,9 +53,7 @@ describe("webhook Discord opérationnel", () => {
     process.env.DISCORD_WEBHOOK_URL = "https://discord.com.attacker.example/api/webhooks/123456789012345678/operations-test-token";
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    await expect(notifyOperations("test", { credentials: {
-      email: "private@example.com", password: "private-password", whatsapp: "+213555000000",
-    } })).resolves.toBe(false);
+    await expect(notifyOperations("test", { orderId: "ORD-123456" })).resolves.toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

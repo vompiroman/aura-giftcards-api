@@ -3,12 +3,6 @@ import { discordWebhookUrl } from "./discordWebhook";
 interface OperationsAlertOptions {
   orderId?: string;
   service?: string;
-  snapchatUsername?: string;
-  credentials?: {
-    email: string;
-    password: string;
-    whatsapp: string;
-  };
 }
 
 function safeDiscordText(value: string, max: number): string {
@@ -29,18 +23,6 @@ export async function notifyOperations(
       : null,
     opts.service
       ? { name: "Service", value: safeDiscordText(opts.service, 120), inline: true }
-      : null,
-    opts.credentials?.email
-      ? { name: "E-mail du compte", value: safeDiscordText(opts.credentials.email, 254), inline: false }
-      : null,
-    opts.credentials?.password
-      ? { name: "Mot de passe temporaire", value: `||${safeDiscordText(opts.credentials.password, 256)}||`, inline: false }
-      : null,
-    opts.credentials?.whatsapp
-      ? { name: "WhatsApp", value: safeDiscordText(opts.credentials.whatsapp, 40), inline: true }
-      : null,
-    opts.snapchatUsername
-      ? { name: "Nom d’utilisateur Snapchat", value: safeDiscordText("@" + opts.snapchatUsername, 40), inline: true }
       : null,
   ].filter(Boolean);
 

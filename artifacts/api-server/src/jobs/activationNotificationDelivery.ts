@@ -25,8 +25,23 @@ function activationService(item: any): "spotify" | "crunchyroll" | "snapchat" | 
 export async function deliverActivationNotificationsForOrder(
   orderId: string,
   items: unknown,
+  revision?: number,
 ): Promise<ActivationNotificationSummary> {
   const summary: ActivationNotificationSummary = { checked: 0, sent: 0, pending: 0, errors: 0 };
+  if (revision === undefined) {
+    if (!parseOrderItems(items).some(activationService)) return summary;
+    const { data: current, error } = await supabaseAdmin
+      .from("orders")
+      .select("items, activation_revision")
+      .eq("order_id", orderId)
+      .eq("payment_status", "paid")
+      .eq("status", "pending")
+      .maybeSingle();
+    if (error) throw error;
+    if (!current) return summary;
+    items = current.items;
+    revision = current.activation_revision;
+  }
   const readableItems = adminOrderItems(items);
   let storedItems = parseOrderItems(items);
   let changed = false;
@@ -38,9 +53,9 @@ export async function deliverActivationNotificationsForOrder(
     summary.checked += 1;
     const sent = await notifyOperations(
       service === "snapchat"
-        ? `Nouvelle commande Snapchat+ payée à activer : ${item.name}. Le client a confirmé l’ajout de @aura-stream.`
-        : `Nouveau compte ${service} payé à activer. Les identifiants temporaires sont également disponibles dans le panneau administrateur sécurisé.`,
-      { orderId, service, credentials, snapchatUsername: service === "snapchat" ? item.snapchat_username : undefined },
+        ? "Nouvelle commande Snapchat+ payée à activer. Ouvre le panneau administrateur."
+        : `Nouveau compte ${service} payé à activer. Ouvre le panneau administrateur.`,
+      { orderId, service },
     );
     if (!sent) {
       summary.pending += 1;
@@ -59,6 +74,7 @@ export async function deliverActivationNotificationsForOrder(
     .eq("order_id", orderId)
     .eq("payment_status", "paid")
     .eq("status", "pending")
+    .eq("activation_revision", revision)
     .select("order_id");
   if (updateError || !updated?.length) {
     summary.errors += 1;
@@ -78,7 +94,7 @@ export async function deliverPendingActivationNotifications(limit = 100): Promis
   const summary: ActivationNotificationSummary = { checked: 0, sent: 0, pending: 0, errors: 0 };
   const { data: orders, error } = await supabaseAdmin
     .from("orders")
-    .select("order_id, items")
+    .select("order_id, items, activation_revision")
     .eq("payment_status", "paid")
     .eq("status", "pending")
     .order("created_at", { ascending: true })
@@ -86,7 +102,7 @@ export async function deliverPendingActivationNotifications(limit = 100): Promis
   if (error) throw error;
 
   for (const order of orders || []) {
-    const orderSummary = await deliverActivationNotificationsForOrder(order.order_id, order.items);
+    const orderSummary = await deliverActivationNotificationsForOrder(order.order_id, order.items, order.activation_revision);
     summary.checked += orderSummary.checked;
     summary.sent += orderSummary.sent;
     summary.pending += orderSummary.pending;

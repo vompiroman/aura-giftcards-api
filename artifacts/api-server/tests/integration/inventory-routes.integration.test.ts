@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
 const {
@@ -28,10 +28,12 @@ vi.mock("../../src/jobs/stockFulfillment", () => ({
 vi.mock("../../src/lib/auditLog", () => ({ appendAuditLog: appendAuditLogMock }));
 
 import app from "../../src/app";
+import { decryptInventorySecret, encryptInventorySecret } from "../../src/lib/inventoryCredentials";
 
 describe("admin Netflix inventory routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("INVENTORY_CREDENTIALS_KEY", "inventory-integration-test-key-only");
     process.env.ADMIN_EMAILS = "admin@aura-stream.com";
     authGetUserMock.mockResolvedValue({
       data: { user: { id: "admin-id", email: "admin@aura-stream.com", app_metadata: { role: "admin" } } },
@@ -51,6 +53,8 @@ describe("admin Netflix inventory routes", () => {
       errors: 0,
     });
   });
+
+  afterEach(() => vi.unstubAllEnvs());
 
   it("ajoute un profil OTP sans mot de passe Netflix historique", async () => {
     const response = await request(app)
@@ -75,10 +79,11 @@ describe("admin Netflix inventory routes", () => {
         imap_port: 993,
         imap_user: "aurastream06@aura-stream.com",
         profile_name: "Aura 6",
-        profile_pin: "0606",
+        profile_pin: expect.stringMatching(/^enc:v1:/),
         is_used: false,
       }),
     ]);
+    expect(decryptInventorySecret(insertMock.mock.calls[0][0][0].profile_pin)).toBe("0606");
     expect(fulfillWaitingMock).toHaveBeenCalledTimes(1);
   });
 
@@ -92,13 +97,17 @@ describe("admin Netflix inventory routes", () => {
     expect(insertMock).toHaveBeenCalledTimes(1);
     expect(insertMock.mock.calls[0][0]).toHaveLength(5);
     for (const [index, row] of insertMock.mock.calls[0][0].entries()) {
-      expect(row).toMatchObject({ account_email: "account@aura-stream.com", service: "netflix", ...profiles[index], is_used: false });
+      expect(row).toMatchObject({
+        account_email: "account@aura-stream.com", service: "netflix", profile_name: profiles[index].profile_name,
+        profile_pin: expect.stringMatching(/^enc:v1:/), is_used: false,
+      });
+      expect(decryptInventorySecret(row.profile_pin)).toBe(profiles[index].profile_pin);
     }
     expect(fulfillWaitingMock).not.toHaveBeenCalled();
   });
 
   it("limite la lecture du stock aux profils Netflix", async () => {
-    const netflixProfile = { id: "profile-netflix", service: "netflix", account_email: "demo@example.com", is_used: false };
+    const netflixProfile = { id: "profile-netflix", service: "netflix", account_email: "demo@example.com", is_used: false, profile_pin: encryptInventorySecret("0123") };
     const orderMock = vi.fn(async () => ({ data: [netflixProfile], error: null }));
     const serviceMock = vi.fn(() => ({ order: orderMock }));
     fromMock.mockReturnValue({ select: vi.fn(() => ({ ilike: serviceMock })) });
@@ -108,6 +117,7 @@ describe("admin Netflix inventory routes", () => {
     expect(serviceMock).toHaveBeenCalledWith("service", "netflix");
     expect(response.body.inventory).toHaveLength(1);
     expect(response.body.inventory[0].service).toBe("netflix");
+    expect(response.body.inventory[0].profile_pin).toBe("0123");
   });
 
   it("valide tous les profils avant insertion pour éviter un ajout partiel", async () => {

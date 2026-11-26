@@ -14,7 +14,7 @@ create table public.orders (
  expires_at timestamp without time zone
 );
 create table public.inventory(id uuid primary key default gen_random_uuid(), assigned_order_id text, is_used boolean,
-  service text, account_email text);
+  service text, account_email text, profile_pin text);
 grant select,insert,update on public.orders to service_role;
 grant insert,update on public.orders to authenticated;
 grant select on public.inventory to service_role;
