@@ -33,6 +33,7 @@ try {
   await q("insert into auth.users(id,email,email_confirmed_at,created_at) values($1,$4,now(),now()-interval '1 day'),($2,null,null,now()),($3,null,null,now())",[u,admin,other,userEmail]);
   await q("insert into public.orders(order_id,assigned_email,amount,status,payment_status,items) values ('ORD-legacy',$1,100,'active','paid','[{\"name\":\"Spotify 1 mois\"}]')",[userEmail]);
   await db.exec(await file("../supabase/migrations/20261126192500_link_orders_to_customer_identity.sql"));
+  await db.exec(await file("../supabase/migrations/20261126193500_expire_stalled_wallet_deposits.sql"));
   assert.equal(await scalar("select customer_user_id from public.orders where order_id='ORD-legacy'"),u);
   await db.exec("set role authenticated");
   await assert.rejects(()=>q("insert into public.orders(order_id,amount,status,payment_status,items,customer_user_id) values ('ORD-untrusted',1,'pending','unpaid','[]',$1)",[u]),/ORDER_OWNER_REQUIRES_SERVER/);
@@ -66,6 +67,19 @@ try {
   assert.equal(await review(application,"APPROVED"),true);
   assert.equal(await review(application,"REJECTED"),false);
   assert.equal(await apply(other,true),"APPROVED");
+  const stalledKey=randomUUID(), linkedKey=randomUUID();
+  const begin=(key)=>scalar("select public.begin_wallet_deposit($1,$2,4000)",[u,key]);
+  const stalled=await begin(stalledKey);
+  const linked=await begin(linkedKey);
+  assert.equal((await begin(stalledKey)).status,"PENDING");
+  await q("update public.wallet_transactions set created_at=now()-interval '3 minutes' where id in ($1,$2)",[stalled.id,linked.id]);
+  await q("update public.wallet_transactions set provider_invoice_id='recovery-fixture' where id=$1",[linked.id]);
+  assert.deepEqual(await begin(stalledKey),{id:stalled.id,status:"FAILED",payment_url:null,create_invoice:false});
+  assert.equal((await begin(linkedKey)).status,"PENDING");
+  assert.equal((await begin(randomUUID())).create_invoice,true);
+  await db.exec("reset role");
+  await q("delete from public.wallet_transactions where user_id=$1",[u]);
+  await db.exec("set role service_role");
   const deposit=async (amount,invoice,key=randomUUID())=>{
     const tx=await scalar("select public.begin_wallet_deposit($1,$2,$3)",[u,key,amount]);
     assert.equal(tx.create_invoice,true);

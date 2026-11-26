@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { WEB_SESSION_COOKIE } from "../../src/lib/webSession";
 import { issuePasswordRecoveryToken, readPasswordRecoveryToken } from "../../src/lib/passwordRecoveryToken";
+import { isKnownCompromisedPassword } from "../../src/lib/compromisedPassword";
 
 const { generateLinkMock, sendRecoveryEmailMock, signUpMock, signInMock, getUserMock, verifyOtpMock, refreshSessionMock, adminSignOutMock, axiosPutMock, partnerFrom, partnerRpc } = vi.hoisted(() => ({
   generateLinkMock: vi.fn(),
@@ -26,6 +27,11 @@ vi.mock("../../src/lib/purchaseEmail", () => ({
   })),
   sendPasswordRecoveryEmail: sendRecoveryEmailMock,
   sendPurchaseConfirmationEmail: vi.fn(),
+}));
+
+vi.mock("../../src/lib/compromisedPassword", async importOriginal => ({
+  ...await importOriginal<typeof import("../../src/lib/compromisedPassword")>(),
+  isKnownCompromisedPassword: vi.fn(async () => false),
 }));
 
 vi.mock("axios", () => ({
@@ -83,6 +89,15 @@ describe("sécurité de l'authentification", () => {
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({ error: "Corps JSON invalide." });
+  });
+
+  it("refuse un mot de passe compromis avant de créer un compte", async () => {
+    vi.mocked(isKnownCompromisedPassword).mockResolvedValueOnce(true);
+    const response = await request(app).post("/api/register")
+      .send({ email: "new-customer@example.invalid", password: "sample-password-for-test" });
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("PASSWORD_COMPROMISED");
+    expect(signUpMock).not.toHaveBeenCalled();
   });
 
   it("ne permet pas d'énumérer les comptes via mot de passe oublié", async () => {
