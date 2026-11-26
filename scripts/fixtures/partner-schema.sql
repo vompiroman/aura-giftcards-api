@@ -12,6 +12,8 @@ create table public.orders (
  slickpay_invoice_id text unique, payment_last_checked_at timestamptz, payment_provider_status text,
  payment_provider_amount numeric, payment_check_count integer not null default 0,
  payment_confirmed_at timestamptz, payment_confirmation_source text,
+ purchase_email_requested_at timestamptz, purchase_email_sent_at timestamptz,
+ purchase_email_attempts integer not null default 0,
  created_at timestamp without time zone not null default (now() at time zone 'UTC'),
  expires_at timestamp without time zone, completed_at timestamptz, activated_at timestamptz
 );

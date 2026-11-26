@@ -31,3 +31,11 @@ export const env = {
   // Service déduit du nom d'article, pour les requêtes d'inventaire.
   ITEM_SERVICE: optional("ITEM_SERVICE", "Netflix"),
 } as const;
+
+const productionHosts = new Set([
+  "aura-stream.com", "www.aura-stream.com", "aura-giftcards-api.onrender.com",
+  "doolnrhcoqmvebvudnwh.supabase.co",
+]);
+if ([env.API_BASE, env.SUPABASE_URL].some(url => productionHosts.has(new URL(url).hostname))) {
+  throw new Error("[E2E] Cette suite modifie puis efface des données et exige un environnement isolé.");
+}
