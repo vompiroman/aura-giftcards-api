@@ -9,7 +9,7 @@ import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
 import { deliverPendingActivationNotifications } from "../jobs/activationNotificationDelivery";
 import { fulfillPaidOrdersWaitingForStock } from "../jobs/stockFulfillment";
 import { runPartnerStockAlerts } from "../jobs/partnerStockAlerts";
-import { isAdmin, requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
+import { hasAdminMfa, isAdmin, requireAdmin, type AuthedRequest } from "../middleware/requireAdmin";
 import {
   adminOrderItems,
   customerWhatsappFromItems,
@@ -580,7 +580,7 @@ router.get("/validate-order", orderReadLimiter, async (req, res): Promise<any> =
       return res.status(404).json({ error: "Commande introuvable." });
     }
 
-    if (!email || (order.assigned_email?.toLowerCase() !== email.toLowerCase() && !isAdmin(email))) {
+    if (!email || order.assigned_email?.toLowerCase() !== email.toLowerCase()) {
       return res.status(403).json({ error: "Accès refusé." });
     }
 
@@ -745,27 +745,8 @@ router.get("/admin/orders-export.csv", orderReadLimiter, requireAdmin, async (re
   }
 });
 
-router.get("/admin/all-orders", async (req, res): Promise<any> => {
+router.get("/admin/all-orders", requireAdmin, async (req, res): Promise<any> => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      res.status(401).json({ error: "Token manquant" });
-      return;
-    }
-    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
-    if (!token) return res.status(401).json({ error: "Token manquant" });
-
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email) {
-      res.status(401).json({ error: "Token invalide ou expiré." });
-      return;
-    }
-    
-    if (!isAdmin(userData.user.email, userData.user.app_metadata)) {
-      res.status(403).json({ error: "Accès refusé. Vous n'êtes pas administrateur." });
-      return;
-    }
-
     const rawPage = Number.parseInt(String(req.query.page || "1"), 10);
     const rawPageSize = Number.parseInt(String(req.query.limit || req.query.page_size || "50"), 10);
     const page = Number.isFinite(rawPage) ? Math.max(1, Math.min(rawPage, 10_000)) : 1;
@@ -863,20 +844,8 @@ router.get("/admin/all-orders", async (req, res): Promise<any> => {
   }
 });
 
-router.post("/admin/update-order-status", async (req, res): Promise<any> => {
+router.post("/admin/update-order-status", requireAdmin, async (req: AuthedRequest, res): Promise<any> => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
-    if (!token) return res.status(401).json({ error: "Token manquant" });
-
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email) return res.status(401).json({ error: "Token invalide." });
-
-    if (!isAdmin(userData.user.email, userData.user.app_metadata)) {
-      return res.status(403).json({ error: "Accès refusé. Admin requis." });
-    }
-
     const { order_id, status } = req.body;
     if (!order_id || !status) return res.status(400).json({ error: "Action de commande manquante." });
     if (typeof order_id !== "string" || !/^ORD-[A-Za-z0-9-]{6,40}$/.test(order_id)) {
@@ -897,7 +866,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
         const {error}=await supabaseAdmin.rpc("refund_partner_wallet_order",{p_order:order_id});
         if (error?.message==="WALLET_REFUND_NOT_ELIGIBLE") return res.status(409).json({error:"Cette commande a déjà été livrée ou un profil lui est attribué."});
         if (error) return res.status(503).json({error:"Le remboursement n’a pas pu être confirmé."});
-        void appendAuditLog({action:"partner_wallet_refund",actorUserId:userData.user.id,targetType:"order",targetId:order_id});
+        void appendAuditLog({action:"partner_wallet_refund",actorUserId:req.adminUserId,targetType:"order",targetId:order_id});
         return res.json({success:true,status:"cancelled",wallet_refunded:true});
       }
     }
@@ -963,7 +932,7 @@ router.post("/admin/update-order-status", async (req, res): Promise<any> => {
 
     void appendAuditLog({
       action: "admin_order_status_update",
-      actorUserId: userData.user.id,
+      actorUserId: req.adminUserId,
       targetType: "order",
       targetId: order_id,
       details: { status },
@@ -1328,17 +1297,8 @@ router.post("/get-netflix-otp", otpLimiter, credentialReadLimiter, async (req, r
 
 
 // Admin inventory routes
-router.get("/admin/inventory", async (req, res): Promise<any> => {
+router.get("/admin/inventory", requireAdmin, async (req, res): Promise<any> => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
-    if (!token) return res.status(401).json({ error: "Token manquant" });
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
-      return res.status(403).json({ error: "Accès refusé." });
-    }
-
     const { data, error } = await supabaseAdmin
       .from("inventory")
       .select("id, service, account_email, is_used, assigned_order_id, assigned_at, created_at, profile_name, profile_pin, imap_host, imap_port, imap_user, account_password, imap_password")
@@ -1391,17 +1351,8 @@ router.get("/admin/inventory", async (req, res): Promise<any> => {
   }
 });
 
-router.post("/admin/inventory", async (req, res): Promise<any> => {
+router.post("/admin/inventory", requireAdmin, async (req: AuthedRequest, res): Promise<any> => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
-    if (!token) return res.status(401).json({ error: "Token manquant" });
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
-      return res.status(403).json({ error: "Accès refusé." });
-    }
-
     const MAX_BATCH = 100;
 
     let rows: any[] = [];
@@ -1453,7 +1404,7 @@ router.post("/admin/inventory", async (req, res): Promise<any> => {
     if (error) throw error;
     void appendAuditLog({
       action: "admin_inventory_create",
-      actorUserId: userData.user.id,
+      actorUserId: req.adminUserId,
       targetType: "inventory",
       details: { count: cleanRows.length, services: [...new Set(cleanRows.map((row) => row.service))] },
     });
@@ -1742,17 +1693,9 @@ router.delete("/admin/inventory/:id", requireAdmin, async (req: AuthedRequest, r
   }
 });
 
-router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
+router.put("/admin/inventory/:id", requireAdmin, async (req: AuthedRequest, res): Promise<any> => {
   try {
-    if (!INVENTORY_ID_RE.test(req.params.id)) return res.status(400).json({ error: "Identifiant de stock invalide." });
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "Token manquant" });
-    const token = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || "";
-    if (!token) return res.status(401).json({ error: "Token manquant" });
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
-      return res.status(403).json({ error: "Accès refusé." });
-    }
+    if (typeof req.params.id !== "string" || !INVENTORY_ID_RE.test(req.params.id)) return res.status(400).json({ error: "Identifiant de stock invalide." });
 
     const { data: existing, error: lookupError } = await supabaseAdmin
       .from("inventory")
@@ -1799,7 +1742,7 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
     if (!updated?.length) return res.status(404).json({ error: "Compte introuvable." });
     void appendAuditLog({
       action: "admin_inventory_update",
-      actorUserId: userData.user.id,
+      actorUserId: req.adminUserId,
       targetType: "inventory",
       targetId: req.params.id,
       details: { fields: Object.keys(updates) },
@@ -1816,17 +1759,9 @@ router.put("/admin/inventory/:id", async (req, res): Promise<any> => {
   }
 });
 
-router.post("/admin/inventory/:id/test-mailbox", async (req, res): Promise<any> => {
-  if (!INVENTORY_ID_RE.test(req.params.id)) return res.status(400).json({ error: "Identifiant de stock invalide." });
+router.post("/admin/inventory/:id/test-mailbox", requireAdmin, async (req: AuthedRequest, res): Promise<any> => {
+  if (typeof req.params.id !== "string" || !INVENTORY_ID_RE.test(req.params.id)) return res.status(400).json({ error: "Identifiant de stock invalide." });
   try {
-    const authHeader = req.headers.authorization;
-    const token = /^Bearer\s+(.+)$/i.exec(authHeader || "")?.[1]?.trim() || "";
-    if (!token) return res.status(401).json({ error: "Token manquant" });
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user?.email || !isAdmin(userData.user.email, userData.user.app_metadata)) {
-      return res.status(403).json({ error: "Accès refusé." });
-    }
-
     const { data: account, error } = await supabaseAdmin
       .from("inventory")
       .select("id, service, account_email, account_password, imap_host, imap_port, imap_user, imap_password")
@@ -1859,7 +1794,7 @@ router.post("/admin/inventory/:id/test-mailbox", async (req, res): Promise<any> 
       const mailbox = await client.status("INBOX", { messages: true });
       void appendAuditLog({
         action: "admin_inventory_mailbox_test",
-        actorUserId: userData.user.id,
+        actorUserId: req.adminUserId,
         targetType: "inventory",
         targetId: req.params.id,
         details: { result: "success", host: strategy.host },
@@ -1886,7 +1821,7 @@ router.get("/health/mailbox", async (req, res): Promise<any> => {
       const token = /^Bearer\s+(.+)$/i.exec(req.get("authorization") || "")?.[1]?.trim() || "";
       if (!token) return res.status(404).end();
       const { data, error } = await supabase.auth.getUser(token);
-      if (error || !data?.user?.email || !isAdmin(data.user.email, data.user.app_metadata)) {
+      if (error || !data?.user?.email || !isAdmin(data.user) || !hasAdminMfa(token, data.user.id)) {
         return res.status(404).end();
       }
     }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
+import { adminTestToken } from "./helpers/admin-session";
 
 const {
   authGetUserMock,
@@ -30,11 +31,12 @@ vi.mock("../../src/lib/auditLog", () => ({ appendAuditLog: appendAuditLogMock })
 import app from "../../src/app";
 import { decryptInventorySecret, encryptInventorySecret } from "../../src/lib/inventoryCredentials";
 
+const adminAuthorization = `Bearer ${adminTestToken("admin-id")}`;
+
 describe("admin Netflix inventory routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("INVENTORY_CREDENTIALS_KEY", "inventory-integration-test-key-only");
-    process.env.ADMIN_EMAILS = "admin@aura-stream.com";
     authGetUserMock.mockResolvedValue({
       data: { user: { id: "admin-id", email: "admin@aura-stream.com", app_metadata: { role: "admin" } } },
       error: null,
@@ -59,7 +61,7 @@ describe("admin Netflix inventory routes", () => {
   it("ajoute un profil OTP sans mot de passe Netflix historique", async () => {
     const response = await request(app)
       .post("/api/admin/inventory")
-      .set("Authorization", "Bearer admin-token")
+      .set("Authorization", adminAuthorization)
       .send({
         service: "netflix",
         account_email: "AuraStream06@Aura-Stream.com",
@@ -90,7 +92,7 @@ describe("admin Netflix inventory routes", () => {
   it("ajoute cinq profils avec un e-mail commun en une insertion et conserve l'attribution manuelle", async () => {
     const profiles = Array.from({ length: 5 }, (_, index) => ({ profile_name: `Aura0${index + 1}`, profile_pin: `000${index + 1}` }));
     const response = await request(app).post("/api/admin/inventory")
-      .set("Authorization", "Bearer admin-token")
+      .set("Authorization", adminAuthorization)
       .send({ account_email: "Account@Aura-Stream.com", profiles, manual_assignment: true });
     expect(response.status).toBe(201);
     expect(response.body).toMatchObject({ added: 5, manual_assignment: true });
@@ -112,7 +114,7 @@ describe("admin Netflix inventory routes", () => {
     const serviceMock = vi.fn(() => ({ order: orderMock }));
     fromMock.mockReturnValue({ select: vi.fn(() => ({ ilike: serviceMock })) });
     const response = await request(app).get("/api/admin/inventory")
-      .set("Authorization", "Bearer admin-token");
+      .set("Authorization", adminAuthorization);
     expect(response.status).toBe(200);
     expect(serviceMock).toHaveBeenCalledWith("service", "netflix");
     expect(response.body.inventory).toHaveLength(1);
@@ -122,7 +124,7 @@ describe("admin Netflix inventory routes", () => {
 
   it("valide tous les profils avant insertion pour éviter un ajout partiel", async () => {
     const response = await request(app).post("/api/admin/inventory")
-      .set("Authorization", "Bearer admin-token")
+      .set("Authorization", adminAuthorization)
       .send({ account_email: "account@aura-stream.com", profiles: [
         { profile_name: "Aura01", profile_pin: "0001" },
         { profile_name: "Aura02", profile_pin: "bad" },
@@ -133,13 +135,13 @@ describe("admin Netflix inventory routes", () => {
   });
 
   it.each([[], Array(6).fill({ profile_name: "Aura01", profile_pin: "0001" }), "invalid", [null]])("refuse les lots de profils invalides %j", async profiles => {
-    await request(app).post("/api/admin/inventory").set("Authorization", "Bearer admin-token")
+    await request(app).post("/api/admin/inventory").set("Authorization", adminAuthorization)
       .send({ account_email: "account@aura-stream.com", profiles }).expect(400);
     expect(insertMock).not.toHaveBeenCalled();
   });
 
   it("attribue automatiquement les profils d'un lot quand l'option manuelle est désactivée", async () => {
-    const response = await request(app).post("/api/admin/inventory").set("Authorization", "Bearer admin-token")
+    const response = await request(app).post("/api/admin/inventory").set("Authorization", adminAuthorization)
       .send({ account_email: "account@aura-stream.com", profiles: [{ profile_name: "Aura01", profile_pin: "0001" }], manual_assignment: false }).expect(201);
     expect(response.body.added).toBe(1);
     expect(fulfillWaitingMock).toHaveBeenCalledTimes(1);
@@ -148,7 +150,7 @@ describe("admin Netflix inventory routes", () => {
   it("refuse un profil incomplet avant tout accès à la base", async () => {
     const response = await request(app)
       .post("/api/admin/inventory")
-      .set("Authorization", "Bearer admin-token")
+      .set("Authorization", adminAuthorization)
       .send({
         service: "netflix",
         account_email: "aurastream07@aura-stream.com",
@@ -166,7 +168,7 @@ describe("admin Netflix inventory routes", () => {
 
     const response = await request(app)
       .post("/api/admin/inventory")
-      .set("Authorization", "Bearer admin-token")
+      .set("Authorization", adminAuthorization)
       .send({
         service: "netflix",
         account_email: "aurastream06@aura-stream.com",
@@ -183,7 +185,7 @@ describe("admin Netflix inventory routes", () => {
     const inventoryId = "4973a601-68ac-4d08-b2ae-6b8613b005e4";
     const response = await request(app)
       .delete(`/api/admin/inventory/${inventoryId}`)
-      .set("Authorization", "Bearer admin-token")
+      .set("Authorization", adminAuthorization)
       .send({});
 
     expect(response.status).toBe(200);
@@ -208,7 +210,7 @@ describe("admin Netflix inventory routes", () => {
 
     const response = await request(app)
       .delete(`/api/admin/inventory/${inventoryId}`)
-      .set("Authorization", "Bearer admin-token")
+      .set("Authorization", adminAuthorization)
       .send({ confirm_disconnected: true });
 
     expect(response.status).toBe(200);
@@ -226,7 +228,7 @@ describe("admin Netflix inventory routes", () => {
 
     const response = await request(app)
       .delete("/api/admin/inventory/8907ce93-eb65-4fbd-9e95-3a7cc1c3071b")
-      .set("Authorization", "Bearer admin-token")
+      .set("Authorization", adminAuthorization)
       .send({ confirm_disconnected: true });
 
     expect(response.status).toBe(409);
