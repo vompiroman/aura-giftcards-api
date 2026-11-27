@@ -9,10 +9,12 @@ import promosRouter from "./promos";
 import adminDashboardRouter from "./adminDashboard";
 import clientDiagnosticsRouter from "./clientDiagnostics";
 import partnersRouter from "./partners";
+import checkoutFunnelRouter from "./checkoutFunnel";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
+router.use(checkoutFunnelRouter);
 router.use(clientDiagnosticsRouter);
 router.use(partnersRouter);
 router.use(invoiceRouter);
