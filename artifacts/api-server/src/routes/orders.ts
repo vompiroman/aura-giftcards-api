@@ -5,7 +5,7 @@ import { supabaseAuth as supabase, supabaseAdmin } from "../lib/supabase";
 import { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { computeCart } from "../config/prices";
-import { linkCheckoutOrder } from "../lib/checkoutFunnel";
+import { checkoutMeasurement } from "../lib/checkoutFunnel";
 import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
 import { deliverPendingActivationNotifications } from "../jobs/activationNotificationDelivery";
 import { fulfillPaidOrdersWaitingForStock } from "../jobs/stockFulfillment";
@@ -54,7 +54,6 @@ import { PARTNER_ENABLED, PARTNER_SCHEMA_READY, uuidPattern } from "../config/pa
 import { fulfillVerifiedPayment } from "../lib/paymentFulfillment";
 
 const router: IRouter = Router();
-const MARKETING_CONSENT_VERSION = "2026-07-26";
 const INVENTORY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INVENTORY_EMAIL_RE = /^[^\s@]{1,64}@[A-Za-z0-9.-]{1,190}$/;
 const INVENTORY_SECRET_MAX = 512;
@@ -341,15 +340,6 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
     }
 
     const orderId = "ORD-" + crypto.randomUUID();
-    const marketingConsent = req.body?.marketing_consent === true;
-    if (
-      marketingConsent
-      && req.body?.marketing_consent_version !== MARKETING_CONSENT_VERSION
-    ) {
-      res.status(400).json({ error: "Version du consentement marketing invalide." });
-      return;
-    }
-
     const promoCode = req.body?.promo_code === undefined ? null : normalizePromoCode(req.body.promo_code);
     if (req.body?.promo_code !== undefined && !promoCode) {
       res.status(400).json({ error: "Code promo invalide." });
@@ -401,21 +391,20 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       renewal_order_id: renewalOrderId,
       status: "pending",
       payment_status: "unpaid",
-      marketing_consent: marketingConsent,
-      marketing_consent_at: marketingConsent ? new Date().toISOString() : null,
-      consent_version: marketingConsent ? MARKETING_CONSENT_VERSION : null,
+      marketing_consent: false,
       customer_whatsapp: customerWhatsapp || null,
     };
 
+    const measurement = checkoutMeasurement(req.body?.checkout_journey_id, pricing.cleanItems);
     if (approvedPartner) {
       const key = req.body?.checkout_key;
       const expected = req.body?.expected_total;
       if (typeof key !== "string" || !uuidPattern.test(key) || typeof expected !== "number" || !Number.isFinite(expected) || expected < 0) {
         res.status(409).json({error:"Actualise les prix partenaire avant de payer.",code:"PARTNER_QUOTE_REQUIRED"}); return;
       }
-      const {data:order,error} = await supabaseAdmin.rpc("create_partner_order",{
+      const {data:order,error} = await supabaseAdmin.rpc(measurement ? "create_measured_partner_order" : "create_partner_order",{
         p_user:actor!.id,p_key:key,p_order:draft,p_wallet:wallet,p_expected:expected,
-        p_promo_client_hash:clientPromoHash(email),
+        p_promo_client_hash:clientPromoHash(email), ...measurement,
       });
       if (error) {
         const code = String(error.message || "");
@@ -439,7 +428,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
         try {
           const result = await fulfillVerifiedPayment({
             order_id:order.order_id,assigned_email:email,customer_user_id:actor.id,items:orderItems,amount:order.amount,
-            status:"pending",payment_status:"paid",renewal_order_id:renewalOrderId,marketing_consent:marketingConsent,
+            status:"pending",payment_status:"paid",renewal_order_id:renewalOrderId,
           },"partner_wallet",{paymentTransitioned:true});
           Object.assign(order,result);
         } catch {
@@ -447,11 +436,12 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
           req.log?.warn({orderId:order.order_id},"Wallet order awaiting fulfillment retry");
         }
       }
-      if (!order.replayed) await linkCheckoutOrder(req.body?.checkout_journey_id, order.order_id, pricing.cleanItems);
       res.status(order.replayed ? 200 : 201).json(order);return;
     }
 
-    const { data: inserted, error: insertError } = await supabaseAdmin.from("orders").insert(draft).select("order_id");
+    const { data: inserted, error: insertError } = measurement
+      ? await supabaseAdmin.rpc("create_measured_checkout_order", { p_order: draft, ...measurement })
+      : await supabaseAdmin.from("orders").insert(draft).select("order_id");
 
     if (insertError) {
       if (insertError.message?.includes("PENDING_ORDER_LIMIT")) {
@@ -463,13 +453,12 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       return;
     }
 
-    if (!inserted || inserted.length === 0) {
+    if (!inserted || (Array.isArray(inserted) && inserted.length === 0)) {
       console.error("[create-order] Insert returned 0 rows. RLS may be blocking inserts. Check that SUPABASE_KEY is the service_role key, not the anon key.");
       res.status(500).json({ error: "La commande n'a pas pu être enregistrée. Contactez le support." });
       return;
     }
 
-    await linkCheckoutOrder(req.body?.checkout_journey_id, orderId, pricing.cleanItems);
     res.status(201).json({ order_id: orderId, amount: finalAmount, subtotal: pricing.amount, discount: discountAmount });
   } catch (err) {
     req.log?.error({ err }, "Unexpected error in POST /create-order");
@@ -872,7 +861,7 @@ router.post("/admin/update-order-status", requireAdmin, async (req: AuthedReques
 
     let { data: currentOrder, error: currentOrderError } = await supabaseAdmin
       .from("orders")
-      .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, expires_at, activated_at, marketing_consent, meta_purchase_sent_at, activation_revision")
+      .select("order_id, assigned_email, status, payment_status, promo_code_id, items, amount, expires_at, activated_at, activation_revision")
       .eq("order_id", order_id)
       .single();
     if (currentOrderError || !currentOrder) return res.status(404).json({ error: "Commande introuvable." });

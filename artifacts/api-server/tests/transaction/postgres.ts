@@ -91,7 +91,7 @@ export function fixtureDatabase(db: Db) {
       const parameters = args.map(([key], index) => `${identifier(key)} => $${index + 1}`);
       const { rows } = await db.query(
         `select public.${identifier(name)}(${parameters.join(",")}) as result`,
-        args.map(([, value]) => databaseValue(value)),
+        args.map(([key, value]) => key === "p_services" ? value : databaseValue(value)),
       );
       return { data: rows[0].result, error: null };
     },
@@ -108,8 +108,11 @@ export async function openPaymentDatabase(entry: string) {
     "supabase/migrations/20261126190500_order_activation_revision.sql",
     "supabase/migrations/20261126192500_link_orders_to_customer_identity.sql",
     "supabase/migrations/20261126193500_expire_stalled_wallet_deposits.sql",
+    "supabase/migrations/20261127160000_checkout_funnel.sql",
+    "supabase/migrations/20261127233000_checkout_measurement_reliability.sql",
   ];
   try {
+    await db.exec("create schema cron; create function cron.schedule(text,text,text) returns bigint language sql as 'select 1::bigint'");
     for (const file of files) await db.exec(await readFile(new URL(`../../../../${file}`, import.meta.url), "utf8"));
     return db;
   } catch (error) {

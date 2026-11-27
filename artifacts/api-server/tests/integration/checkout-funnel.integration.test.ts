@@ -37,10 +37,25 @@ it("rejects unknown fields, fabricated purchase milestones and cross-origin even
     .send({ ...event, email: "ignored@example.invalid" }).expect(400);
   await request(app).post("/api/checkout-funnel").set("Origin", origin)
     .send({ ...event, stage: "purchase" }).expect(400);
+  await request(app).post("/api/checkout-funnel").set("Origin", origin)
+    .send({ ...event, stage: "payment_prepared" }).expect(400);
   await request(app).post("/api/checkout-funnel").set("Origin", "https://elsewhere.example").send(event).expect(403);
   await request(app).post("/api/checkout-funnel").send(event).expect(403);
   await request(app).get("/api/admin/checkout-funnel").expect(401);
   expect(from).not.toHaveBeenCalled();
+});
+
+it("preserves the time of a delayed milestone and bounds a clock ahead", async () => {
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now);
+  const base = { ...event, services: ["netflix"] };
+  for (const [submitted, expected] of [[now - 15000, now - 15000], [now + 3600000, now]]) {
+    await request(app).post("/api/checkout-funnel").set("Origin", origin)
+      .send({ ...base, occurred_at: submitted }).expect(204);
+    expect(upsert).toHaveBeenLastCalledWith([
+      { journey_id: event.journey_id, service: "netflix", stage: "cart_view", recorded_at: new Date(expected).toISOString() },
+    ], { onConflict: "journey_id,service,stage", ignoreDuplicates: true });
+  }
 });
 
 it("only exposes a boolean on the public stock route", async () => {

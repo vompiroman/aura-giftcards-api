@@ -22,7 +22,6 @@ vi.mock("../../src/lib/supabase", () => ({
   supabaseAdmin: { from: fromMock, rpc: rpcMock },
 }));
 vi.mock("../../src/lib/notifyAdmin", () => ({ notifyAdmin: notifyAdminMock }));
-vi.mock("../../src/lib/metaConversions", () => ({ sendMetaPurchase: vi.fn() }));
 vi.mock("../../src/lib/auditLog", () => ({ appendAuditLog: appendAuditLogMock }));
 vi.mock("../../src/lib/paymentAlerts", () => ({
   recordPaymentFailure: recordPaymentFailureMock,
