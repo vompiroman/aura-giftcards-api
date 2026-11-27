@@ -24,7 +24,7 @@ export function issuePasswordRecoveryToken(hash: unknown, requestedAt: number): 
   return tokenVersion + Buffer.concat([nonce, cipher.getAuthTag(), encrypted]).toString("base64url");
 }
 
-export function readPasswordRecoveryToken(token: unknown, now = Date.now()): string | null {
+export function readPasswordRecoveryContext(token: unknown, now = Date.now()) {
   if (typeof token !== "string" || !/^v1\.[A-Za-z0-9_-]{40,800}$/.test(token)) return null;
   const key = recoveryKey();
   try {
@@ -37,8 +37,14 @@ export function readPasswordRecoveryToken(token: unknown, now = Date.now()): str
     decipher.setAuthTag(tag);
     const cleartext = Buffer.concat([decipher.update(data.subarray(nonceBytes + tagBytes)), decipher.final()]);
     const { hash, expiresAt } = JSON.parse(cleartext.toString("utf8"));
-    return validHash(hash) && Number.isSafeInteger(expiresAt) && now < expiresAt ? hash : null;
+    return validHash(hash) && Number.isSafeInteger(expiresAt) && now < expiresAt
+      ? { hash, expiresAt: Number(expiresAt), id: createHash("sha256").update(token).digest("base64url") }
+      : null;
   } catch {
     return null;
   }
+}
+
+export function readPasswordRecoveryToken(token: unknown, now = Date.now()): string | null {
+  return readPasswordRecoveryContext(token, now)?.hash ?? null;
 }

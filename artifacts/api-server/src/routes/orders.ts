@@ -5,6 +5,7 @@ import { supabaseAuth as supabase, supabaseAdmin } from "../lib/supabase";
 import { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { computeCart } from "../config/prices";
+import { linkCheckoutOrder } from "../lib/checkoutFunnel";
 import { runCleanupCycle, checkMailboxHealth } from "../jobs/imapCleanup";
 import { deliverPendingActivationNotifications } from "../jobs/activationNotificationDelivery";
 import { fulfillPaidOrdersWaitingForStock } from "../jobs/stockFulfillment";
@@ -446,6 +447,7 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
           req.log?.warn({orderId:order.order_id},"Wallet order awaiting fulfillment retry");
         }
       }
+      if (!order.replayed) await linkCheckoutOrder(req.body?.checkout_journey_id, order.order_id, pricing.cleanItems);
       res.status(order.replayed ? 200 : 201).json(order);return;
     }
 
@@ -467,11 +469,19 @@ router.post("/create-order", createOrderLimiter, async (req, res) => {
       return;
     }
 
+    await linkCheckoutOrder(req.body?.checkout_journey_id, orderId, pricing.cleanItems);
     res.status(201).json({ order_id: orderId, amount: finalAmount, subtotal: pricing.amount, discount: discountAmount });
   } catch (err) {
     req.log?.error({ err }, "Unexpected error in POST /create-order");
     res.status(500).json({ error: "Erreur interne du serveur." });
   }
+});
+
+router.get("/catalog/netflix-availability", orderReadLimiter, async (_req, res): Promise<any> => {
+  const { data, error } = await supabaseAdmin.from("inventory")
+    .select("id").ilike("service", "netflix").eq("is_used", false).is("assigned_order_id", null).limit(1);
+  if (error || !data) return res.sendStatus(503);
+  return res.json({ available: data.length > 0 });
 });
 
 router.get("/my-orders", orderReadLimiter, async (req, res): Promise<any> => {

@@ -6,6 +6,7 @@ import type { CookieOptions, NextFunction, Request, Response } from "express";
 export const ACCESS_COOKIE_NAME = "aura_access";
 export const REFRESH_COOKIE_NAME = "aura_refresh";
 export const REMEMBER_COOKIE_NAME = "aura_remember";
+export const RECOVERY_COOKIE_NAME = "aura_password_recovery";
 
 
 const baseCookieOptions: CookieOptions = {
@@ -15,6 +16,15 @@ const baseCookieOptions: CookieOptions = {
   path: "/api",
   priority: "high",
 };
+
+export function recoveryCookieOptions(req: Request): CookieOptions {
+  return {
+    ...baseCookieOptions,
+    secure: baseCookieOptions.secure || req.secure,
+    sameSite: "strict",
+    path: "/api/reset-password",
+  };
+}
 
 function safeCookieValue(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -42,7 +52,8 @@ export function rememberSessionFromRequest(req: Request): boolean {
 }
 
 export function requestUsesAuthCookies(req: Request): boolean {
-  return Boolean(req.cookies?.[WEB_SESSION_COOKIE] || req.cookies?.[ACCESS_COOKIE_NAME] || req.cookies?.[REFRESH_COOKIE_NAME]);
+  return Boolean(req.cookies?.[WEB_SESSION_COOKIE] || req.cookies?.[ACCESS_COOKIE_NAME]
+    || req.cookies?.[REFRESH_COOKIE_NAME] || req.cookies?.[RECOVERY_COOKIE_NAME]);
 }
 
 export function attachCookieAuthorization(req: Request, _res: Response, next: NextFunction): void {

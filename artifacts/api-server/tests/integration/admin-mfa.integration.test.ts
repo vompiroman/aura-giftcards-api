@@ -43,7 +43,7 @@ beforeEach(() => {
 });
 
 it("exige le second facteur sur l’inventaire, les commandes et l’export", async () => {
-  for (const path of ["/admin/inventory", "/admin/all-orders", "/admin/orders-export.csv"]) {
+  for (const path of ["/admin/inventory", "/admin/all-orders", "/admin/orders-export.csv", "/admin/checkout-funnel"]) {
     const response = await request(app).get(`/api${path}`).set("Cookie", cookie);
     expect(response.status).toBe(403);
     expect(response.body.code).toBe("ADMIN_MFA_REQUIRED");

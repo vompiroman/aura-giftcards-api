@@ -11,15 +11,17 @@ import axios from "axios";
 import { appendAuditLog } from "../lib/auditLog";
 import {
   REMEMBER_COOKIE_NAME,
+  RECOVERY_COOKIE_NAME,
   accessTokenFromRequest,
   clearSessionCookies,
   refreshTokenFromRequest,
+  recoveryCookieOptions,
   rememberSessionFromRequest,
   setSessionCookies,
 } from "../lib/sessionCookies";
 import { normalizeAlgerianMobile } from "../lib/phone";
 import { getPurchaseEmailConfig, sendPasswordRecoveryEmail } from "../lib/purchaseEmail";
-import { issuePasswordRecoveryToken, readPasswordRecoveryToken } from "../lib/passwordRecoveryToken";
+import { issuePasswordRecoveryToken, readPasswordRecoveryContext } from "../lib/passwordRecoveryToken";
 import { compromisedPasswordMessage, isKnownCompromisedPassword } from "../lib/compromisedPassword";
 import { PARTNER_ENABLED, AUTO_APPROVE_PARTNERS } from "../config/partnerTiers";
 import { partnerQuestionnaire } from "./partners";
@@ -410,20 +412,41 @@ router.post("/forgot-password", recoveryLimiter, async (req, res) => {
   }
 });
 
-router.post("/reset-password", recoveryLimiter, async (req, res) => {
-  const invalidRecoveryLink = () => res.status(400).json({
+function invalidRecoveryLink(res: import("express").Response) {
+  return res.status(400).json({
     code: "RECOVERY_LINK_INVALID",
     error: "Lien de réinitialisation invalide ou expiré.",
   });
+}
+
+router.put("/reset-password", recoveryLimiter, (req, res) => {
+  const now = Date.now();
+  const token = req.body?.token_hash;
+  const context = readPasswordRecoveryContext(token, now);
+  if (!context) {
+    invalidRecoveryLink(res);
+    return;
+  }
+  res.cookie(RECOVERY_COOKIE_NAME, token, { ...recoveryCookieOptions(req), maxAge: context.expiresAt - now });
+  res.json({ recovery_id: context.id });
+});
+
+router.get("/reset-password", (req, res) => {
+  const context = readPasswordRecoveryContext(req.cookies?.[RECOVERY_COOKIE_NAME]);
+  res.json({ recovery_id: context?.id ?? null });
+});
+
+router.post("/reset-password", recoveryLimiter, async (req, res) => {
   try {
-    const { token: legacyToken, token_hash: recoveryToken, password } = req.body;
+    const { token: legacyToken, token_hash: recoveryToken, recovery_id: recoveryId, password } = req.body;
     if (!validPassword(password)) {
       res.status(400).json({ error: "Le nouveau mot de passe doit contenir 12 à 128 caractères." });
       return;
     }
-    const tokenHash = legacyToken === undefined ? readPasswordRecoveryToken(recoveryToken) : null;
-    if (!tokenHash) {
-      invalidRecoveryLink();
+    const fromCookie = recoveryToken === undefined;
+    const context = readPasswordRecoveryContext(fromCookie ? req.cookies?.[RECOVERY_COOKIE_NAME] : recoveryToken);
+    if (legacyToken !== undefined || !context || (fromCookie && recoveryId !== context.id)) {
+      invalidRecoveryLink(res);
       return;
     }
     if (await isKnownCompromisedPassword(password)) {
@@ -439,14 +462,15 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
     }
 
     // A mail scanner may open the link. Consume it only when the form is submitted.
-    const { data, error } = await createAuthClient().auth.verifyOtp({ type: "recovery", token_hash: tokenHash });
+    const { data, error } = await createAuthClient().auth.verifyOtp({ type: "recovery", token_hash: context.hash });
     if (isTemporaryAuthError(error)) {
       req.log.warn({ code: error?.code }, "Supabase recovery verification temporarily unavailable");
       res.status(503).json({ error: "Service d'authentification indisponible." });
       return;
     }
     if (error || !data.session?.access_token || !data.user?.id) {
-      invalidRecoveryLink();
+      if (fromCookie) res.clearCookie(RECOVERY_COOKIE_NAME, recoveryCookieOptions(req));
+      invalidRecoveryLink(res);
       return;
     }
     const token = data.session.access_token;
@@ -465,6 +489,7 @@ router.post("/reset-password", recoveryLimiter, async (req, res) => {
     }
 
     await webSessions().revokeUser(data.user.id);
+    if (fromCookie) res.clearCookie(RECOVERY_COOKIE_NAME, recoveryCookieOptions(req));
     clearSessionCookies(res);
     res.json({ message: "Mot de passe réinitialisé avec succès." });
   } catch (err: any) {
