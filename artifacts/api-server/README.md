@@ -63,9 +63,11 @@ La création d'une facture utilise `SLICKPAY_PUBLIC_KEY`, `SLICKPAY_WEBHOOK_URL`
 l'UUID du compte bénéficiaire SlickPay. Ce dernier est indispensable lorsqu'aucun
 compte bénéficiaire par défaut n'est défini dans SlickPay.
 
-## Suivi Meta et alertes de stock
+## Mesure du parcours d’achat
 
-Le webhook de paiement peut envoyer l'événement `Purchase` à la Conversion API Meta. Configure `META_CAPI_ACCESS_TOKEN` et, si nécessaire, `META_PIXEL_ID` et `META_GRAPH_API_VERSION`. L'adresse email est normalisée puis hachée en SHA-256 avant l'envoi ; aucun identifiant de compte streaming n'est transmis.
+Le rapport agrégé s’affiche dans **Administration → Vue d’ensemble**. La [cartographie des étapes et les résultats de l’audit](./docs/checkout-measurement.md) précisent les données mesurées.
+
+## Alertes de stock
 
 Le workflow `stock-alerts.yml` appelle chaque jour la route protégée `/api/cron/stock-alerts`. Seuls les profils Netflix sont stockés et surveillés. Configure les secrets GitHub `PRODUCTION_API_ORIGIN` et `CRON_SECRET`, ainsi que `DISCORD_ADMIN_WEBHOOK_URL` et `LOW_STOCK_THRESHOLD` sur le serveur.
 

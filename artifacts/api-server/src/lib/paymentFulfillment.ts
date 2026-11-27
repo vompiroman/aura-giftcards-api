@@ -1,6 +1,5 @@
 import { supabaseAdmin } from "./supabase";
 import { notifyAdmin } from "./notifyAdmin";
-import { sendMetaPurchase } from "./metaConversions";
 import { appendAuditLog } from "./auditLog";
 import { recordPaymentFailure, resetPaymentFailure } from "./paymentAlerts";
 import { clientPromoHash } from "./promos";
@@ -18,8 +17,6 @@ export interface PayableOrder {
   renewal_order_id?: string | null;
   items: any;
   amount: number;
-  marketing_consent?: boolean | null;
-  meta_purchase_sent_at?: string | null;
 }
 
 export interface FulfillmentResult {
@@ -47,7 +44,6 @@ export async function fulfillVerifiedPayment(
 
   // Le paiement a déjà été confirmé par l'observation SlickPay ou le débit
   // atomique du portefeuille. Il n'existe pas de confirmation manuelle.
-  const wasAlreadyPaid = options.paymentTransitioned !== true;
 
   if (order.promo_code_id && source !== "partner_wallet") {
     const { data: reserved, error: reserveError } = await supabaseAdmin.rpc("reserve_promo_redemption", {
@@ -62,22 +58,6 @@ export async function fulfillVerifiedPayment(
         dedupeKey: `promo-reservation-${order.order_id}`,
       });
       return { payment_status: "paid", order_status: "pending", promo_unavailable: true };
-    }
-  }
-
-  if (!wasAlreadyPaid && order.marketing_consent === true && !order.meta_purchase_sent_at) {
-    const metaSent = await sendMetaPurchase({
-      orderId: order.order_id,
-      amount: Number(order.amount),
-      email: String(order.assigned_email || ""),
-      items: order.items,
-    });
-    if (metaSent) {
-      await supabaseAdmin
-        .from("orders")
-        .update({ meta_purchase_sent_at: new Date().toISOString() })
-        .eq("order_id", order.order_id)
-        .is("meta_purchase_sent_at", null);
     }
   }
 

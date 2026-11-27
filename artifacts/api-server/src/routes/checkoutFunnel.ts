@@ -18,8 +18,13 @@ router.post("/checkout-funnel", limiter, async (req, res) => {
   if (!req.get("origin")) return res.sendStatus(403);
   const event = checkoutFunnelEvent.safeParse(req.body);
   if (!event.success) return res.sendStatus(400);
-  const { journey_id, stage, services } = event.data;
-  const rows = [...new Set(services)].map(service => ({ journey_id, stage, service }));
+  const { journey_id, stage, services, occurred_at } = event.data;
+  const now = Date.now();
+  // Bound client clocks and allow delayed delivery without shifting the cohort.
+  const recorded = occurred_at === undefined ? {} : {
+    recorded_at: new Date(Math.min(now, Math.max(now - dayMs, occurred_at))).toISOString(),
+  };
+  const rows = [...new Set(services)].map(service => ({ journey_id, stage, service, ...recorded }));
   const { error } = await supabaseAdmin.from("checkout_funnel_events")
     .upsert(rows, { onConflict: "journey_id,service,stage", ignoreDuplicates: true });
   return res.sendStatus(error ? 503 : 204);

@@ -157,7 +157,7 @@ describe("POST /api/create-order", () => {
     expect(builder.delete).not.toHaveBeenCalled();
   });
 
-  it("enregistre le consentement marketing avec sa version", async () => {
+  it("ignore les champs Meta envoyés par une ancienne version du frontend", async () => {
     const builder = orderInsertStub();
     fromMock.mockReturnValue(builder);
 
@@ -173,12 +173,11 @@ describe("POST /api/create-order", () => {
 
     expect(res.status).toBe(201);
     expect(builder.insert).toHaveBeenCalledWith(expect.objectContaining({
-      marketing_consent: true,
-      marketing_consent_at: expect.any(String),
-      consent_version: "2026-07-26",
+      marketing_consent: false,
     }));
     const inserted = builder.insert.mock.calls[0][0];
-    expect(inserted.marketing_consent_at).not.toBe("2000-01-01T00:00:00.000Z");
+    expect(inserted).not.toHaveProperty("marketing_consent_at");
+    expect(inserted).not.toHaveProperty("consent_version");
   });
 
   it("normalise et enregistre le WhatsApp sur la commande", async () => {
@@ -293,23 +292,6 @@ describe("POST /api/create-order", () => {
     expect(res.body.error).toContain("ne peut pas être renouvelée");
   });
 
-  it("rejette une version de consentement inconnue", async () => {
-    const builder = orderInsertStub();
-    fromMock.mockReturnValue(builder);
-
-    const res = await request(app)
-      .post("/api/create-order")
-      .set("Authorization", `Bearer ${VALID_TOKEN}`)
-      .send({
-        items: [{ name: "Netflix Premium 1 mois", quantity: 1 }],
-        marketing_consent: true,
-        marketing_consent_version: "ancienne-version",
-      });
-
-    expect(res.status).toBe(400);
-    expect(builder.insert).not.toHaveBeenCalled();
-  });
-
   it("refuse implicitement le suivi marketing sans consentement explicite", async () => {
     const builder = orderInsertStub();
     fromMock.mockReturnValue(builder);
@@ -322,8 +304,6 @@ describe("POST /api/create-order", () => {
     expect(res.status).toBe(201);
     expect(builder.insert).toHaveBeenCalledWith(expect.objectContaining({
       marketing_consent: false,
-      marketing_consent_at: null,
-      consent_version: null,
     }));
   });
 

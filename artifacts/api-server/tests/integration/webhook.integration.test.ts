@@ -1,16 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
-const { notifyAdminMock, sendMetaPurchaseMock, appendAuditLogMock, rpcMock, fromMock } = vi.hoisted(() => ({
+const { notifyAdminMock, appendAuditLogMock, rpcMock, fromMock } = vi.hoisted(() => ({
   notifyAdminMock: vi.fn(),
-  sendMetaPurchaseMock: vi.fn(),
   appendAuditLogMock: vi.fn(),
   rpcMock: vi.fn(),
   fromMock: vi.fn(),
 }));
 
 vi.mock("../../src/lib/notifyAdmin", () => ({ notifyAdmin: notifyAdminMock }));
-vi.mock("../../src/lib/metaConversions", () => ({ sendMetaPurchase: sendMetaPurchaseMock }));
 vi.mock("../../src/lib/auditLog", () => ({ appendAuditLog: appendAuditLogMock }));
 
 vi.mock("../../src/lib/supabase", () => ({
@@ -93,8 +91,6 @@ describe("POST /api/webhook", () => {
     vi.clearAllMocks();
     process.env.WEBHOOK_SECRET = WEBHOOK_SECRET;
     process.env.SLICKPAY_API_KEY = "test-api-key";
-    delete process.env.META_CAPI_ACCESS_TOKEN;
-    sendMetaPurchaseMock.mockResolvedValue(true);
     assignmentResponse = { data: { status: "assigned", assigned_id: "inv-1" }, error: null };
     observedPaidOrders = new Set();
     rpcMock.mockImplementation(async (name: string, params: Record<string, any>) => {
@@ -305,44 +301,6 @@ describe("POST /api/webhook", () => {
     );
   });
 
-  it("n'envoie jamais Purchase sans consentement marketing", async () => {
-    const res = await request(app)
-      .post("/api/webhook")
-      .set("x-webhook-secret", WEBHOOK_SECRET)
-      .send(webhookPayload("ORD-x"));
-
-    expect(res.status).toBe(200);
-    expect(sendMetaPurchaseMock).not.toHaveBeenCalled();
-  });
-
-  it("n'envoie qu'un Purchase lors du rejeu d'un webhook payé", async () => {
-    fromMock.mockImplementation(statefulOrderQueries({
-      order_id: "ORD-meta-123",
-      status: "pending",
-      payment_status: "unpaid",
-      amount: 800,
-      assigned_email: "client@example.com",
-      slickpay_invoice_id: "INV-ORD-meta-123",
-      items: [{ name: "Netflix 1 mois", quantity: 1 }],
-      marketing_consent: true,
-      meta_purchase_sent_at: null,
-    }));
-
-    const first = await request(app)
-      .post("/api/webhook")
-      .set("x-webhook-secret", WEBHOOK_SECRET)
-      .send(webhookPayload("ORD-meta-123"));
-    const replay = await request(app)
-      .post("/api/webhook")
-      .set("x-webhook-secret", WEBHOOK_SECRET)
-      .send(webhookPayload("ORD-meta-123"));
-
-    expect(first.status).toBe(200);
-    expect(replay.status).toBe(200);
-    expect(replay.body.activated).toBe(true);
-    expect(sendMetaPurchaseMock).toHaveBeenCalledTimes(1);
-  });
-
   it("ne lance qu'une attribution lors de deux webhooks concurrents", async () => {
     fromMock.mockImplementation(statefulOrderQueries({
       order_id: "ORD-concurrent-1",
@@ -365,8 +323,7 @@ describe("POST /api/webhook", () => {
     expect(rpcMock.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("confirme le paiement même si Meta refuse l'événement", async () => {
-    sendMetaPurchaseMock.mockResolvedValue(false);
+  it("confirme le paiement et ignore un ancien consentement Meta", async () => {
     fromMock.mockReturnValue(orderQueryStub({
       order_id: "ORD-meta-fail",
       status: "pending",

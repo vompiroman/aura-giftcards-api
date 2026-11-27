@@ -7,7 +7,6 @@ const {
   recordPaymentFailureMock,
   resetPaymentFailureMock,
   rpcMock,
-  sendMetaPurchaseMock,
 } = vi.hoisted(() => ({
   appendAuditLogMock: vi.fn(),
   deliverActivationNotificationsMock: vi.fn(),
@@ -15,13 +14,11 @@ const {
   recordPaymentFailureMock: vi.fn(),
   resetPaymentFailureMock: vi.fn(),
   rpcMock: vi.fn(),
-  sendMetaPurchaseMock: vi.fn(),
 }));
 
 vi.mock("../../src/lib/supabase", () => ({ supabaseAdmin: { rpc: rpcMock } }));
 vi.mock("../../src/lib/auditLog", () => ({ appendAuditLog: appendAuditLogMock }));
 vi.mock("../../src/lib/notifyAdmin", () => ({ notifyAdmin: notifyAdminMock }));
-vi.mock("../../src/lib/metaConversions", () => ({ sendMetaPurchase: sendMetaPurchaseMock }));
 vi.mock("../../src/lib/paymentAlerts", () => ({
   recordPaymentFailure: recordPaymentFailureMock,
   resetPaymentFailure: resetPaymentFailureMock,

@@ -488,7 +488,7 @@ router.post("/verify-payment", verifyPaymentLimiter, async (req: Request, res: E
 
     const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("order_id, assigned_email, customer_user_id, amount, status, payment_status, promo_code_id, renewal_order_id, slickpay_invoice_id, items, expires_at, marketing_consent, meta_purchase_sent_at")
+      .select("order_id, assigned_email, customer_user_id, amount, status, payment_status, promo_code_id, renewal_order_id, slickpay_invoice_id, items, expires_at")
       .eq("order_id", orderId)
       .single();
 
