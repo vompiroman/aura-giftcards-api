@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { WEB_SESSION_COOKIE } from "../../src/lib/webSession";
+import { RECOVERY_COOKIE_NAME } from "../../src/lib/sessionCookies";
 import { issuePasswordRecoveryToken, readPasswordRecoveryToken } from "../../src/lib/passwordRecoveryToken";
 import { isKnownCompromisedPassword } from "../../src/lib/compromisedPassword";
 
@@ -218,6 +219,58 @@ describe("sécurité de l'authentification", () => {
     expect(response.body.code).toBe("RECOVERY_LINK_INVALID");
     expect(verifyOtpMock).not.toHaveBeenCalled();
     expect(axiosPutMock).not.toHaveBeenCalled();
+  });
+
+  it("reprend la récupération avec un cookie HttpOnly en respectant l'expiration et le contexte de l'onglet", async () => {
+    const now = Date.now();
+    const token = issuePasswordRecoveryToken("r".repeat(56), now - 840_000)!;
+    const expired = issuePasswordRecoveryToken("r".repeat(56), now - 900_000)!;
+    const path = "/api/reset-password";
+    const ip = "192.0.2.32";
+    const create = (tokenHash: string) => request(app).put(path)
+      .set("X-Forwarded-For", ip).set("X-Forwarded-Proto", "https")
+      .set("Origin", "https://www.aura-stream.com").send({ token_hash: tokenHash });
+    expect((await create(expired)).status).toBe(400);
+    const prepared = await create(token);
+    expect(prepared.status).toBe(200);
+    const recoveryId = prepared.body.recovery_id;
+    expect(recoveryId).toMatch(/^[\w-]{43}$/);
+    expect(JSON.stringify(prepared.body)).not.toContain(token);
+    const [header] = prepared.headers["set-cookie"];
+    expect(header).toMatch(/; Max-Age=(?:5\d|60);/);
+    expect(header).toContain("Path=/api/reset-password");
+    expect(header).toContain("HttpOnly");
+    expect(header).toContain("Secure");
+    expect(header).toContain("SameSite=Strict");
+    const cookie = header.split(";")[0];
+    const read = (value: string) => request(app).get(path).set("Cookie", value);
+    const reloaded = await read(cookie);
+    expect(reloaded.body).toEqual({ recovery_id: recoveryId });
+    expect(reloaded.headers["cache-control"]).toBe("no-store");
+    expect((await read(`${RECOVERY_COOKIE_NAME}=${expired}`)).body.recovery_id).toBeNull();
+    expect(verifyOtpMock).not.toHaveBeenCalled();
+
+    const reset = (id: string) => request(app).post(path)
+      .set("X-Forwarded-For", ip).set("Origin", "https://www.aura-stream.com").set("Cookie", cookie)
+      .send({ recovery_id: id, password: "mot-de-passe-fort-2026" });
+    expect((await reset("another-tab")).body.code).toBe("RECOVERY_LINK_INVALID");
+    expect(verifyOtpMock).not.toHaveBeenCalled();
+    verifyOtpMock
+      .mockResolvedValueOnce({ data: { session: null, user: null }, error: { status: 503 } })
+      .mockResolvedValueOnce({ data: { session: { access_token: "test-recovery-access" }, user: { id: "user-1" } }, error: null })
+      .mockResolvedValueOnce({ data: { session: null, user: null }, error: { status: 403, code: "otp_expired" } });
+    axiosPutMock.mockResolvedValue({ data: { id: "user-1" } });
+    adminSignOutMock.mockResolvedValue({ error: null });
+    const unavailable = await reset(recoveryId);
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.headers["set-cookie"]).toBeUndefined();
+    const changed = await reset(recoveryId);
+    expect(changed.status).toBe(200);
+    expect(changed.headers["set-cookie"]).toEqual(expect.arrayContaining([
+      expect.stringContaining(`${RECOVERY_COOKIE_NAME}=;`),
+    ]));
+    expect(await reset(recoveryId)).toMatchObject({ status: 400, body: { code: "RECOVERY_LINK_INVALID" } });
+    expect(axiosPutMock).toHaveBeenCalledTimes(1);
   });
 
   it("révoque la session Supabase lors de la déconnexion", async () => {
