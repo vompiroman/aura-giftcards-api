@@ -14,6 +14,13 @@ export const checkoutFunnelEvent = z.object({
   occurred_at: z.number().int().positive().optional(),
 }).strict();
 
+export const guestLoginExperimentEvent = z.object({
+  journey_id: checkoutJourneyId,
+  experiment_event: z.enum(["guest_login_exposure", "guest_login_auth_error", "guest_login_checkout_error"]),
+  occurred_at: z.number().int().positive(),
+  journey_expires_at: z.number().int().positive(),
+}).strict();
+
 export function checkoutMeasurement(journey: unknown, items: { name: string }[]) {
   const id = checkoutJourneyId.safeParse(journey);
   if (!id.success) return null;

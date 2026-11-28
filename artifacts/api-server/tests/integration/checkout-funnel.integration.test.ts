@@ -58,6 +58,34 @@ it("preserves the time of a delayed milestone and bounds a clock ahead", async (
   }
 });
 
+it("only records an active experiment and derives the variant server-side", async () => {
+  const time = Date.now();
+  const exposure = { journey_id: event.journey_id, experiment_event: "guest_login_exposure",
+    occurred_at: time, journey_expires_at: time + 60_000 };
+  try {
+    vi.stubEnv("CHECKOUT_GUEST_LOGIN_AB_START", "");
+    await request(app).post("/api/checkout-funnel").set("Origin", origin).send(exposure).expect(204);
+    expect(from).not.toHaveBeenCalled();
+    vi.stubEnv("CHECKOUT_GUEST_LOGIN_AB_START", new Date(time - 1000).toISOString());
+    await request(app).post("/api/checkout-funnel").set("Origin", origin).send({ ...exposure, variant: "B" }).expect(400);
+    await request(app).post("/api/checkout-funnel").set("Origin", origin).send(exposure).expect(204);
+    expect(from).toHaveBeenCalledWith("checkout_guest_login_ab_events");
+    expect(upsert).toHaveBeenCalledWith({
+      journey_id: event.journey_id, kind: "guest_login_exposure", variant: "A",
+      occurred_at: new Date(time).toISOString(), journey_expires_at: new Date(time + 60_000).toISOString(),
+    }, { onConflict: "journey_id,kind", ignoreDuplicates: true });
+    upsert.mockClear();
+    vi.stubEnv("CHECKOUT_GUEST_LOGIN_AB_START", new Date(time - 28 * 86400000).toISOString());
+    await request(app).post("/api/checkout-funnel").set("Origin", origin).send(exposure).expect(204);
+    expect(upsert).not.toHaveBeenCalled();
+    await request(app).post("/api/checkout-funnel").set("Origin", origin)
+      .send({ ...exposure, experiment_event: "guest_login_auth_error" }).expect(204);
+    expect(upsert).toHaveBeenCalledOnce();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
 it("only exposes a boolean on the public stock route", async () => {
   select.mockReturnValue({ ilike });
   ilike.mockReturnValue({ eq });
